@@ -1,31 +1,92 @@
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
 import socket
 import random
 import hashlib
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
+import re
+
+def perform_dh_key_exchange():
+    # Diffie-Hellman parameters
+    p = 23
+    g = 5
+    client_private = random.randint(1, p - 2)
+    client_public = pow(g, client_private, p)
+    s = socket.socket()
+    s.connect(('server', 5002))
+    s.send(str(client_public).encode())
+    server_public = int(s.recv(1024).decode())
+    shared_secret = pow(server_public, client_private, p)
+    print("[Client] Shared secret with server:", shared_secret)
+    s.close()
+    key = hashlib.sha512(str(shared_secret).encode()).digest()
+    return key[:32], key[32:48], key[48:64]  # SSL, ENC, RAND
+
+def tokenisation_selection():
+    s = socket.socket()
+    s.connect(('middlebox', 5001))
+    option = s.recv(1024).decode()
+    s.close()
+    if ',' in option:
+        option_str, min_len_str = option.split(',')
+        return int(option_str), int(min_len_str)
+    else:
+        return int(option), None
+
+def window_tokenisation(plaintext, window_size=8):
+    tokens = []
+    message_bytes = plaintext.encode('utf-8')
+    length = len(message_bytes)
+    for i in range(length):
+        token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
+        tokens.append(token)
+    return tokens
+
+def delimiter_tokenisation(plaintext):
+    delimiters = ['=', ';', ':', ',', ' ']
+    pattern = '|'.join(map(re.escape, delimiters))
+    tokens = re.split(pattern, plaintext)
+    return [token.encode() for token in tokens if token]
 
 def encrypt_message(k_ssl, plaintext):
     aesgcm = AESGCM(k_ssl)
-    nonce = os.urandom(12)  # 96-bit nonce recommended
+    nonce = os.urandom(12)
     ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
-    return nonce + ciphertext  # send nonce with ciphertext
+    return nonce + ciphertext
 
-with open("key.bin", "rb") as f:
-    key = f.read()
-k_ssl=key[:32]
-k_o=key[32:48]
-k_rand=key[48:64]
+def main():
+    k_ssl, k, k_rand = perform_dh_key_exchange()
+    option, min_length = tokenisation_selection()
+    while True:
+        msg = input("Enter message to send: ")
+        if not msg:
+            break
+        tokens = []
+        if option == 1:
+            print("Window-based tokenisation selected with window-size=",min_length)
+            tokens = window_tokenisation(msg)
+        elif option == 2:
+            print("Delimiter-based tokenisation selected")
+            tokens = delimiter_tokenisation(msg)
+        encrypted_tokens = []
+        cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
+        for token in tokens:
+            padder = padding.PKCS7(128).padder()
+            padded = padder.update(token) + padder.finalize()
+            encryptor = cipher.encryptor()
+            ct = encryptor.update(padded) + encryptor.finalize()
+            encrypted_tokens.append(ct)
+        print("tokens:", tokens)
+        print("enc tokens:", encrypted_tokens)
+        enc_msg = encrypt_message(k_ssl, msg)
+        m = socket.socket()
+        m.connect(('middlebox', 5001))
+        m.send(enc_msg)
+        response = m.recv(1024)
+        print("Received from middlebox:", response.decode())
+        m.close()
 
-# --- Phase 2: Send encrypted messages to middlebox ---
-while True:
-    msg = input("Enter message to send: ")
-    if not msg:
-        break
-
-    enc_msg=encrypt_message(k_ssl,msg)
-    m = socket.socket()
-    m.connect(('middlebox', 5001))  
-    m.send(enc_msg)
-    response = m.recv(1024)
-    print("Received from middlebox:", response.decode())
-    m.close()
+if __name__ == "__main__":
+    main()

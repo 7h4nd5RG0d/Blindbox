@@ -1,7 +1,23 @@
 import socket
+import random
 
 # Ruleset
 ruleset = ['hack', 'malware', 'attack', 'exploit']
+min_length = min(len(word) for word in ruleset)
+
+
+def handle_tokenisation(middlebox_socket):
+    conn, addr = middlebox_socket.accept()
+    print("[Middlebox] Tokenisation connection from", addr)
+    s=random.randint(1,2)
+    if s==2:
+        conn.send(str(s).encode())
+    else:
+        msg = f"{s},{min_length}"
+        conn.send(msg.encode())
+    
+    print("[Middlebox] Tokenisation method:", s)
+    conn.close()
 
 def forward_to_server(message):
     try:
@@ -19,6 +35,7 @@ def main():
     mb.listen(5)
     print("[Middlebox] Middlebox up...")
 
+    handle_tokenisation(mb) 
     while True:
         try:
             conn, addr = mb.accept()

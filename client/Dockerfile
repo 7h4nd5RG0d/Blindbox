@@ -5,4 +5,3 @@ RUN pip install cryptography
 
 WORKDIR /app
 COPY . .
-CMD ["python", "client.py"]

@@ -17,11 +17,11 @@ p = 23
 g = 5
 
 k_ssl=0
-k_o=0
+k=0
 k_rand=0
 
 def handle_key_exchange(server_socket):
-    global k_ssl, k_o, k_rand
+    global k_ssl, k, k_rand
     conn, addr = server_socket.accept()
     print("[Server] DH connection from", addr)
 
@@ -34,7 +34,7 @@ def handle_key_exchange(server_socket):
     print("[Server] Shared secret with client:", shared_secret)
     key = hashlib.sha512(str(shared_secret).encode()).digest() 
     k_ssl=key[:32]
-    k_o=key[32:48]
+    k=key[32:48]
     k_rand=key[48:64]
     conn.close()
     
@@ -63,7 +63,7 @@ def main():
     s = socket.socket()
     s.bind(('0.0.0.0', 5002))
     s.listen(5)
-    print("[Server] Server listening on port 5002...")
+    print("[Server] Server up...")
 
     handle_key_exchange(s)
     handle_middlebox_messages(s)
