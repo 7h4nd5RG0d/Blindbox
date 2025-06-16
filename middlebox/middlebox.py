@@ -27,17 +27,24 @@ def receive_full(conn, n):
     return data
 
 def receive_payload(conn):
+    token_length=0
     # Read length of enc_msg (4 bytes)
     enc_len_bytes = receive_full(conn, 4)
     enc_len = int.from_bytes(enc_len_bytes, 'big')
     # Read enc_msg
     enc_msg = receive_full(conn, enc_len)
+    # Tokenisation type:
+    tokenisation_type_bytes=receive_full(conn,1)
+    tokenisation_type = int.from_bytes(tokenisation_type_bytes, 'big')
+    if tokenisation_type==1:
+        token_length_bytes=receive_full(conn,4)
+        token_length = int.from_bytes(token_length_bytes, 'big')
     # Read length of token data (4 bytes)
     token_len_bytes = receive_full(conn, 4)
     token_len = int.from_bytes(token_len_bytes, 'big')
     # Read encrypted tokens
     token_data = receive_full(conn, token_len)
-    return enc_msg, token_data
+    return enc_msg, token_data,tokenisation_type,token_length
 
 # Select tokenisation scheme
 def handle_tokenisation(middlebox_socket):
@@ -76,12 +83,15 @@ def main():
             # Connection with client
             conn, addr = mb.accept()
             print(f"[Middlebox] Connection from {addr}")
-            encrypted_msg,token_stream= receive_payload(conn)
+            encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             print("[Middlebox] Encrypted message:", encrypted_msg.hex())
             print("[Middlebox] Encrypted tokens:", token_stream.hex())
             parsed_tokens=parse_token_data(token_stream)
             # Forward as-is to the server
-            payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + len(token_stream).to_bytes(4, 'big')+token_stream
+            if tokenisation_type==1:
+                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
+            else:
+                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ len(token_stream).to_bytes(4, 'big')+token_stream
             server_response = forward_to_server(payload)
             conn.send(server_response)
         except Exception as e:

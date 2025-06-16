@@ -98,7 +98,12 @@ def main():
         m.connect(('middlebox', 5001))
 
         token_data = b''.join(len(t).to_bytes(2, 'big') + t for t in encrypted_tokens)
-        payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + len(token_data).to_bytes(4, 'big')+token_data
+
+        if option==1:
+            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ min_length.to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
+        else:
+            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+len(token_data).to_bytes(4, 'big')+token_data
+
         print("PAYLOAD:",payload)
         m.sendall(payload)
         #Recieve from middlebox
