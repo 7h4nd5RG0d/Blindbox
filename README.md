@@ -11,11 +11,19 @@ docker-compose build
 ```bash
 docker-compose up -d
 ```
-3) To implement the Diffie Helman Key Exchange  
-```bash
-docker exec -it client python init_dh.py 
-```
-4) The main client 
+
+3) Client 
 ```bash
 docker exec -it client python client.py
 ```
+
+4) For viewing the logs of middlebox and server, open another terminal and run:
+```bash
+docker-compose logs -f
+```
+
+5) After finishing the session, make sure to run, 
+```bash
+docker-compose down
+```
+before starting new session

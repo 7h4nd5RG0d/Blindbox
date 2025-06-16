@@ -5,4 +5,4 @@ RUN pip install cryptography
 
 WORKDIR /app
 COPY server.py .
-CMD ["python", "server.py"]
+CMD ["python", "-u","server.py"]

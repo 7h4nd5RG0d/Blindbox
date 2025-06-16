@@ -5,4 +5,4 @@ RUN pip install cryptography
 
 WORKDIR /app
 COPY middlebox.py .
-CMD ["python", "middlebox.py"]
+CMD ["python", "-u","middlebox.py"]
