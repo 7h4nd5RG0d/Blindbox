@@ -118,7 +118,6 @@ def validate_tokens(data,tokens,tokenisation_type,token_length):
         else:
             return False
 
-
 def parse_token_data(token_data):
     i = 0
     tokens = []
