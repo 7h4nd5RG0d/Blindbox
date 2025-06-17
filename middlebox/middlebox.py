@@ -4,6 +4,7 @@ import random
 # Ruleset
 ruleset = ['hack', 'malware', 'attack', 'exploit']
 min_length = min(len(word) for word in ruleset)
+RS=2**40
 
 def parse_token_data(token_data):
     i = 0
@@ -47,7 +48,9 @@ def receive_payload(conn):
     return enc_msg, token_data,tokenisation_type,token_length
 
 # Select tokenisation scheme
+salt_0=0
 def handle_tokenisation(middlebox_socket):
+    global salt_0
     conn, addr = middlebox_socket.accept()
     print("[Middlebox] Tokenisation connection from", addr)
     s=random.randint(1,2)
@@ -58,6 +61,9 @@ def handle_tokenisation(middlebox_socket):
         conn.send(msg.encode())
     
     print("[Middlebox] Tokenisation method:", s)
+    salt_0_bytes=conn.recv(1024)
+    salt_0 = int.from_bytes(salt_0_bytes, 'big')
+    print("[Middlebox] Initial salt decided is",salt_0)
     conn.close()
 
 def forward_to_server(message):

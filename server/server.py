@@ -11,18 +11,24 @@ import re
 # Diffie-Hellman params
 p = 23
 g = 5
+# Global params
 k_ssl=0
 k=0
 k_rand=0
+RS=2**40
+salt_int=0
 
 def handle_key_exchange(server_socket):
-    global k_ssl, k, k_rand
+    global k_ssl, k, k_rand, salt_int
     conn, addr = server_socket.accept()
     print("[Server] DH connection from", addr)
     client_public = int(conn.recv(1024).decode())
     server_private = random.randint(1, p - 2)
     server_public = pow(g, server_private, p)
     conn.send(str(server_public).encode())
+    salt_bytes =conn.recv(1024)
+    salt_int = int.from_bytes(salt_bytes, 'big')
+    print("[Server] salt recieved:",salt_int)
     shared_secret = pow(client_public, server_private, p)
     print("[Server] Shared secret with client:", shared_secret)
     key = hashlib.sha512(str(shared_secret).encode()).digest() 
@@ -71,12 +77,10 @@ def receive_payload(conn):
     # Tokenisation type:
     tokenisation_type_bytes=receive_full(conn,1)
     tokenisation_type = int.from_bytes(tokenisation_type_bytes, 'big')
-    print("Here1")
     if tokenisation_type==1:
         token_length_bytes=receive_full(conn,4)
         token_length = int.from_bytes(token_length_bytes, 'big')
     # Read length of token data (4 bytes)
-    print("Here2")
     token_len_bytes = receive_full(conn, 4)
     token_len = int.from_bytes(token_len_bytes, 'big')
     # Read encrypted tokens

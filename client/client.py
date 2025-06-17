@@ -9,6 +9,9 @@ import hashlib
 import os
 import re
 
+RS=2**40
+salt=os.urandom(32)
+salt_int = int.from_bytes(salt, byteorder='big')
 # Diffie Helman Key Exchange
 def perform_dh_key_exchange():
     # Diffie-Hellman parameters
@@ -22,7 +25,7 @@ def perform_dh_key_exchange():
     s.connect(('server', 5002))
     s.send(str(client_public).encode())
     server_public = int(s.recv(1024).decode()) # Server's public key
-
+    s.send(salt) # Send the salt
     # Derive keys
     shared_secret = pow(server_public, client_private, p)  # Shared secret using DH
     print("[Client] Shared secret with server:", shared_secret)
@@ -36,6 +39,8 @@ def tokenisation_selection():
     s = socket.socket()
     s.connect(('middlebox', 5001))
     option = s.recv(1024).decode()
+    print("Salt:",salt_int)
+    s.send(salt)
     s.close()
     if ',' in option:
         option_str, min_len_str = option.split(',')
@@ -46,19 +51,29 @@ def tokenisation_selection():
 # Window Tokenisation
 def window_tokenisation(plaintext, window_size):
     tokens = []
+    salts=[]
+    counts={}
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
     for i in range(length):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
         tokens.append(token)
-    return tokens
+        counts[token]=counts.get(token,0)+1
+        salts.append(salt_int+counts[token])
+    return tokens,salts
 
 # Delimiter Tokenisation
 def delimiter_tokenisation(plaintext):
     delimiters = ['=', ';', ':', ',', ' ']
+    salts=[]
+    counts={}
     pattern = '|'.join(map(re.escape, delimiters))
     tokens = re.split(pattern, plaintext)
-    return [token.encode() for token in tokens if token]
+    for token in tokens:
+        token_byte=token.encode()
+        counts[token_byte]=counts.get(token_byte,0)+1
+        salts.append(salt_int+counts[token_byte])
+    return [token.encode() for token in tokens if token], salts
 
 # Encryption
 def encrypt_message(k_ssl, plaintext):
@@ -75,13 +90,13 @@ def main():
         if not msg:
             break
         tokens = []
-
+        salts=[]
         if option == 1:
             print("Window-based tokenisation selected with window-size=",min_length)
-            tokens = window_tokenisation(msg,min_length)
+            tokens,salts = window_tokenisation(msg,min_length)
         elif option == 2:
             print("Delimiter-based tokenisation selected")
-            tokens = delimiter_tokenisation(msg)
+            tokens,salts = delimiter_tokenisation(msg)
 
         encrypted_tokens = []
         cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
