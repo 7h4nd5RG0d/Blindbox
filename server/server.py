@@ -208,7 +208,7 @@ def handle_middlebox_messages(server_socket):
                 conn.send(dec_data) 
                 conn.close()
             else:
-                warning="Hacking Attempt Detected"
+                warning="Hacking attempt detected at [Server]"
                 conn.send(warning.encode())
         except Exception as e:
             print("[Server] Error:", str(e))

@@ -120,6 +120,7 @@ def main():
             print("Delimiter-based tokenisation selected")
             tokens,salts = delimiter_tokenisation(msg)
 
+        print("Tokens:",tokens)
         pre_encrypted_tokens = []
         encrypted_tokens = []
         cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
@@ -142,7 +143,6 @@ def main():
             ct_int=ct_int%RS
             ct_bytes = ct_int.to_bytes(5, byteorder='big')
             encrypted_tokens.append(ct_bytes)
-            print(ct_bytes,end=' ')
             idx=idx+1
 
         enc_msg = encrypt_message(k_ssl, msg)
@@ -153,10 +153,11 @@ def main():
         token_data = b''.join(len(t).to_bytes(2, 'big') + t for t in encrypted_tokens)
 
         if option==1:
-            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ min_length.to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
+            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ (min_length).to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
         else:
             payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+len(token_data).to_bytes(4, 'big')+token_data
 
+        print('')
         print("PAYLOAD:",payload)
         m.sendall(payload)
         #Recieve from middlebox

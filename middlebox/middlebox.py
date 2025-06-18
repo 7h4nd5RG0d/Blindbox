@@ -82,7 +82,7 @@ def main():
     mb.bind(('0.0.0.0', 5001))
     mb.listen(5)
     print("[Middlebox] Middlebox up...")
-
+    global window_length
     handle_tokenisation(mb) 
 
     while True:
@@ -96,11 +96,17 @@ def main():
             parsed_tokens=parse_token_data(token_stream)
             # Forward as-is to the server
             if tokenisation_type==1:
-                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
+                if token_length==window_length:
+                    payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
+                    server_response = forward_to_server(payload)
+                    conn.send(server_response)
+                else:
+                    warning="Hacking attempt detected at [Middlebox]"
+                    conn.send(warning.encode())
             else:
                 payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ len(token_stream).to_bytes(4, 'big')+token_stream
-            server_response = forward_to_server(payload)
-            conn.send(server_response)
+                server_response = forward_to_server(payload)
+                conn.send(server_response)
         except Exception as e:
             print("[Middlebox] Error:", str(e))
         finally:
