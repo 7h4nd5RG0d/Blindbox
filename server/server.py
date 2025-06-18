@@ -90,19 +90,51 @@ def receive_payload(conn):
 # Window Tokenisation
 def window_tokenisation(plaintext, window_size):
     tokens = []
+    salts=[]
+    counts={}
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
     for i in range(length):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
+        tokens.append(token)
+        counts[token]=counts.get(token,0)+1
+        salts.append(salt_int+counts[token])
+    return tokens,salts
+
+# Partial Window Tokenisation
+def window_tokenisation_partial(plaintext, window_size):
+    tokens = []
+    message_bytes = plaintext.encode('utf-8')
+    length = len(message_bytes)
+    for i in range(length-window_size+1):
+        token = message_bytes[i:i+window_size]
         tokens.append(token)
     return tokens
 
 # Delimiter Tokenisation
 def delimiter_tokenisation(plaintext):
     delimiters = ['=', ';', ':', ',', ' ']
+    salts=[]
+    counts={}
     pattern = '|'.join(map(re.escape, delimiters))
-    tokens = re.split(pattern, plaintext)
-    return [token.encode() for token in tokens if token]
+    raw_tokens = re.split(pattern, plaintext)
+    tokens=[]
+    for token in raw_tokens:
+        if not token:
+            continue
+        if len(token) > 8:
+            # Replace long token with 8-byte windows
+            broken_tokens = window_tokenisation_partial(token, 8)
+            for t in broken_tokens:
+                counts[t] = counts.get(t, 0) + 1
+                tokens.append(t)
+                salts.append(salt_int + counts[t])
+        else:
+            token_byte = token.encode()
+            counts[token_byte] = counts.get(token_byte, 0) + 1
+            tokens.append(token_byte)
+            salts.append(salt_int + counts[token_byte])
+    return tokens, salts
 
 def validate_tokens(data,tokens,tokenisation_type,token_length):
     if tokenisation_type==1:
@@ -138,10 +170,41 @@ def handle_middlebox_messages(server_socket):
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             dec_data=decrypt_message(k_ssl,encrypted_msg)
             encrypted_tokens=parse_token_data(token_stream)
-            tokens=decrypt_tokens(encrypted_tokens,k)
-            print("[Server] Tokens:",tokens)
+
+            salts=[]
+            server_tokens=[]
+            server_pre_enc_tokens=[]
+            server_enc_tokens=[]
+            if tokenisation_type==1:
+                server_tokens,salts=window_tokenisation(dec_data.decode(),token_length)
+            else:
+                server_tokens,salts=delimiter_tokenisation(dec_data.decode())
+            
+            cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
+            for token in server_tokens:
+                padder = padding.PKCS7(128).padder() 
+                padded = padder.update(token) + padder.finalize()
+                encryptor = cipher.encryptor()
+                ct = encryptor.update(padded) + encryptor.finalize()
+                server_pre_enc_tokens.append(ct)
+            
+            idx=0
+            for token in server_pre_enc_tokens:
+                cipher = Cipher(algorithms.AES(token), modes.ECB(), backend=default_backend())
+                padder = padding.PKCS7(128).padder() 
+                salt_bytes = salts[idx].to_bytes(16, byteorder='big')
+                padded = padder.update(salt_bytes) + padder.finalize()
+                encryptor = cipher.encryptor()
+                ct = encryptor.update(padded) + encryptor.finalize()
+                ct_int=int.from_bytes(ct, byteorder='big')
+                ct_int=ct_int%RS
+                ct_bytes = ct_int.to_bytes(5, byteorder='big')
+                server_enc_tokens.append(ct_bytes)
+
+            #tokens=decrypt_tokens(encrypted_tokens,k)
+            #print("[Server] Tokens:",tokens)
             print("[Server] Received:", dec_data.decode())
-            if validate_tokens(dec_data.decode(),tokens,tokenisation_type,token_length):
+            if encrypted_tokens==server_enc_tokens:
                 conn.send(dec_data) 
                 conn.close()
             else:

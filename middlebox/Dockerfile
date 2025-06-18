@@ -7,6 +7,7 @@ RUN apt update && apt install -y tcpdump
 WORKDIR /app
 COPY middlebox.py .
 COPY entrypoint.sh .
+COPY rules .
 RUN chmod +x entrypoint.sh
 
 #CMD ["python","-u","middlebox.py"]

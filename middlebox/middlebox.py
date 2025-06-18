@@ -4,6 +4,7 @@ import random
 # Ruleset
 ruleset = ['hack', 'malware', 'attack', 'exploit']
 min_length = min(len(word) for word in ruleset)
+window_length=min(min_length,8)
 RS=2**40
 
 def parse_token_data(token_data):
@@ -57,7 +58,7 @@ def handle_tokenisation(middlebox_socket):
     if s==2:
         conn.send(str(s).encode())
     else:
-        msg = f"{s},{min_length}"
+        msg = f"{s},{window_length}"
         conn.send(msg.encode())
     
     print("[Middlebox] Tokenisation method:", s)
