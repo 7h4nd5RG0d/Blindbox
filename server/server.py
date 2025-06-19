@@ -136,20 +136,6 @@ def delimiter_tokenisation(plaintext):
             salts.append(salt_int + counts[token_byte])
     return tokens, salts
 
-def validate_tokens(data,tokens,tokenisation_type,token_length):
-    if tokenisation_type==1:
-        calc_tokens=window_tokenisation(data,token_length)
-        if calc_tokens==tokens:
-            return True
-        else:
-            return False
-    else:
-        calc_tokens=delimiter_tokenisation(data)
-        if calc_tokens==tokens:
-            return True
-        else:
-            return False
-
 def parse_token_data(token_data):
     i = 0
     tokens = []
@@ -201,8 +187,6 @@ def handle_middlebox_messages(server_socket):
                 ct_bytes = ct_int.to_bytes(5, byteorder='big')
                 server_enc_tokens.append(ct_bytes)
 
-            #tokens=decrypt_tokens(encrypted_tokens,k)
-            #print("[Server] Tokens:",tokens)
             print("[Server] Received:", dec_data.decode())
             if encrypted_tokens==server_enc_tokens:
                 conn.send(dec_data) 
