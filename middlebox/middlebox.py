@@ -228,10 +228,11 @@ def handle_tokenisation(middlebox_socket):
     salt_0 = int.from_bytes(salt_0_bytes, 'big')
     print("[Middlebox] Initial salt decided is",salt_0)
     conn.close()
+    return s
 
-def handle_evaluation(middlebox_socket):
+def sample_handle_evaluation(middlebox_socket):
     conn, addr = middlebox_socket.accept()
-    print("[Middlebox] Evaluation connection from", addr)
+    print("[Middlebox] Sample Evaluation connection from", addr)
     with conn:
         length_bytes = conn.recv(4)
         length = int.from_bytes(length_bytes, 'big')
@@ -242,7 +243,9 @@ def handle_evaluation(middlebox_socket):
                 raise ConnectionError("Connection closed unexpectedly")
             data += chunk
         print("[Bob] Received evaluator package.")
+        conn.close()
     return pickle.loads(data)
+
 
 WIRE_LABEL_SIZE=16
 def evaluate_gate(gate, wire_values):
@@ -276,7 +279,7 @@ def evaluate_gate(gate, wire_values):
     else:
         raise NotImplementedError(f"Unsupported gate type: {gate['type']}")
           
-def evaluate_circuit(package):
+def sample_evaluate_circuit(package):
     wire_values = {}
 
     bob_wires = package['middlebox_inputs']
@@ -340,48 +343,201 @@ def bits_to_bytes(bits):
         byte_arr.append(byte)
     return bytes(byte_arr)
 
+import socket
+
+def receive_labels(plaintext_rules, s):
+    conn, addr = s.accept()
+    print(f"[Middlebox] Evaluation Connected to {addr}")
+
+    try:
+        # Step 1: Receive evaluator package
+        length_bytes = conn.recv(4)
+        if len(length_bytes) < 4:
+            raise RuntimeError("Did not receive full length prefix")
+
+        length = int.from_bytes(length_bytes, 'big')        
+        received = b''
+        while len(received) < length:
+            chunk = conn.recv(min(4096, length - len(received)))
+            if not chunk:
+                raise RuntimeError("Connection closed while receiving circuit")
+            received += chunk
+
+        evaluator_package = pickle.loads(received)
+        print("[Middlebox] Received evaluator package.")
+
+        # ✅ Send number of blocks followed by all 16-byte plaintext blocks
+        num_blocks = len(plaintext_rules)
+        conn.sendall(num_blocks.to_bytes(4, 'big'))
+
+        for block in plaintext_rules:
+            assert len(block) == 16
+            conn.sendall(block)
+
+        # ✅ Receive all input labels at once
+        expected_total = num_blocks * 128 * 17
+        labels_raw = b''
+        while len(labels_raw) < expected_total:
+            chunk = conn.recv(expected_total - len(labels_raw))
+            if not chunk:
+                raise RuntimeError("Connection closed while receiving labels")
+            labels_raw += chunk
+
+        if len(labels_raw) != expected_total:
+            raise RuntimeError("Did not receive full label+selbit data")
+
+        all_input_labels = []
+        for i in range(num_blocks):
+            block_raw = labels_raw[i*128*17 : (i+1)*128*17]
+            input_labels = [
+                (block_raw[j:j+16], block_raw[j+16])
+                for j in range(0, 128*17, 17)
+            ]
+            all_input_labels.append(input_labels)
+
+        return evaluator_package, all_input_labels
+
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        return None, []
+    finally:
+        conn.close()
+
+
+
+
+def bytes_to_bits(byte_data):
+    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
+
+# Window Tokenisation
+def window_tokenisation(plaintext, window_size):
+    tokens = []
+    salts=[]
+    counts={}
+    message_bytes = plaintext.encode('utf-8')
+    length = len(message_bytes)
+    for i in range(length):
+        token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
+        tokens.append(token)
+        counts[token]=counts.get(token,0)+1
+        salts.append(salt_0+counts[token])
+    return tokens,salts
+
+# Partial Window Tokenisation
+def window_tokenisation_partial(plaintext, window_size):
+    tokens = []
+    message_bytes = plaintext.encode('utf-8')
+    length = len(message_bytes)
+    for i in range(length-window_size+1):
+        token = message_bytes[i:i+window_size]
+        tokens.append(token)
+    return tokens
+
+# Delimiter Tokenisation
+def delimiter_tokenisation(plaintext):
+    delimiters = ['=', ';', ':', ',', ' ']
+    salts=[]
+    counts={}
+    pattern = '|'.join(map(re.escape, delimiters))
+    raw_tokens = re.split(pattern, plaintext)
+    tokens=[]
+    for token in raw_tokens:
+        if not token:
+            continue
+        if len(token) > 8:
+            # Replace long token with 8-byte windows
+            broken_tokens = window_tokenisation_partial(token, 8)
+            for t in broken_tokens:
+                counts[t] = counts.get(t, 0) + 1
+                tokens.append(t)
+                salts.append(salt_0 + counts[t])
+        else:
+            token_byte = token.encode()
+            counts[token_byte] = counts.get(token_byte, 0) + 1
+            tokens.append(token_byte)
+            salts.append(salt_0 + counts[token_byte])
+    return tokens, salts
+
+def prepare(ruleset,tokenisation_type,window_length):
+    prepared_rules=[]
+    for rule in ruleset:
+        if tokenisation_type==1:
+            broken_rules,salts=window_tokenisation(rule,window_length)
+        else:
+            broken_rules,salts=delimiter_tokenisation(rule)
+
+        for rules in broken_rules:
+            padder = padding.PKCS7(128).padder() 
+            padded = padder.update(rules) + padder.finalize()
+
+            for i in range(0,len(padded),16):
+                prepared_rules.append((padded[i:i+16]))
+
+    return prepared_rules
+
+def evaluate_circuit(package,labels):
+    
+
+    bob_indices = package['middlebox_input_wires']
+    alice_wires = package['alice_inputs']
+    alice_indices = package['alice_input_wires']
+
+    and_index = 0
+    for gate in package['gates']:
+        if gate['type'] == 'AND':
+            gate['table'] = package['garbled_tables'][and_index]['table']
+            and_index += 1
+
+    final_wires_list=[]
+    for i in range(0,len(labels)):
+        pre_label=labels[i]
+        wire_values = {}
+        for idx, (label,sel_bit) in zip(bob_indices, pre_label):
+            wire_values[idx] = (label, sel_bit)
+
+        for idx, (label, sel_bit) in zip(alice_indices, alice_wires):
+            wire_values[idx] = (label, sel_bit)
+
+        for gate in package['gates']:
+            evaluate_gate(gate, wire_values)
+        
+        final_wires_list.append(wire_values)
+
+    return final_wires_list
+
+
+
 def main():
     # Setup middlebox
     mb = socket.socket()
     mb.bind(('0.0.0.0', 5001))
-    mb.listen(5)
+    mb.listen(15)
     print("[Middlebox] Middlebox up...")
     global window_length
-    handle_tokenisation(mb) 
 
-    package=handle_evaluation(mb)
-    wire_values = evaluate_circuit(package)
-    print("PART 2a:",wire_values[16316])
-    print("PART 2b:",wire_values[36492])
-    print("PART 2a:",wire_values[16317])
-    print("PART 2b:",wire_values[36493])
-        # Sorted check
-    wire_items = sorted(wire_values.items(), key=lambda x: x[0])
+    tokenisation_type=handle_tokenisation(mb) 
 
-    first_mismatch = None
-    mismatch_count = 0
+    sample_package=sample_handle_evaluation(mb)
+    sample_wire_values = sample_evaluate_circuit(sample_package)
 
-    for idx, (label, _) in wire_items:
-        if idx in package['wire_labels']:
-            label0 = package['wire_labels'][idx][0][0]
-            label1 = package['wire_labels'][idx][1][0]
-            if label != label0 and label != label1:
-                if first_mismatch is None:
-                    first_mismatch = idx
-                mismatch_count += 1
+    sample_output_bits = decode_outputs(sample_wire_values, sample_package['output_map'])
+    sample_output_bytes = bits_to_bytes(sample_output_bits)
+    print("[Middleobx] Sample Output (hex):", sample_output_bytes.hex())
 
-    print("First Mismatched Label Index:", first_mismatch)
-    print("Total Mismatched Labels:", mismatch_count)
-    print("Total Wires:", len(wire_values))
-    print("INPUT CHECK",decode_outputs(wire_values, package['bob_map']))
-    print("INPUT KEY CHECK",decode_outputs(wire_values, package['key_map']))
-    output_bits = decode_outputs(wire_values, package['output_map'])
-    print("[Bob] Output bits:", output_bits)
-    output_bytes = bits_to_bytes(output_bits)
-    print("[Bob] Output (hex):", output_bytes.hex())
+    prepared_ruleset=prepare(ruleset,tokenisation_type,window_length)
+    package,labels=receive_labels(prepared_ruleset,mb)
+    wire_values = evaluate_circuit(package,labels)
+    encrypted_ruleset=[]
+    for i in range(0,len(wire_values)):
+        output_bits = decode_outputs(wire_values[i], package['output_map'])
+        encrypted_ruleset.append(bits_to_bytes(output_bits))
+    root=AVL_creation(None,encrypted_ruleset)
+
 
     while True:
+        
         try:
+            conn = None  
             # Connection with client
             conn, addr = mb.accept()
             print(f"[Middlebox] Connection from {addr}")
@@ -389,10 +545,6 @@ def main():
             print("[Middlebox] Encrypted message:", encrypted_msg.hex())
             print("[Middlebox] Encrypted tokens:", token_stream.hex())
             parsed_tokens=parse_token_data(token_stream)
-            
-            encrypted_ruleset=[]
-            root=AVL_creation(None,encrypted_ruleset)
-
             # Forward as-is to the server
             if tokenisation_type==1:
                 if token_length==window_length:
