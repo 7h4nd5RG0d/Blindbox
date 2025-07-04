@@ -1,7 +1,7 @@
+# DEPENDENCIES:
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import socket
 import pickle
 import socket
@@ -11,11 +11,19 @@ import os
 import re
 import sys
 
+#####################################################################################################
+# GLOBAL PARAMS:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Ruleset
+ruleset = ['hack', 'malware', 'attack', 'exploit']
+min_length = min(len(word) for word in ruleset)
+window_length=min(min_length,8) # Window length for tokenisation
+RS=2**40
+salt_0=0 # Initial salt
+WIRE_LABEL_SIZE=16
 
-import zmq
-import time
-
+#####################################################################################################
+# AVL Tree class and functions:
 class Node:
     def __init__(self,key,ctr):
         self.key=key
@@ -24,13 +32,7 @@ class Node:
         self.right=None
         self.height=1
 
-# Ruleset
-ruleset = ['hack', 'malware', 'attack', 'exploit']
-min_length = min(len(word) for word in ruleset)
-window_length=min(min_length,8)
-RS=2**40
-salt_0=0
-
+# Rebalance after deletion and insertion
 def rebalance(node):
     balance=get_balance(node)
 
@@ -47,16 +49,17 @@ def rebalance(node):
         else:
             node.right=right_rotate(node.right)
             return left_rotate(node)
-        
     return node
 
-
+# Get height
 def get_height(node):
     return node.height if node else 0
 
+# Get balance
 def get_balance(node):
     return get_height(node.left) - get_height(node.right) if node else 0
 
+# Rotate the tree to right
 def right_rotate(z):
     y = z.left
     T3 = y.right
@@ -71,6 +74,7 @@ def right_rotate(z):
 
     return y
 
+# Rotate to left
 def left_rotate(z):
     y = z.right
     T2 = y.left
@@ -85,18 +89,21 @@ def left_rotate(z):
 
     return y
 
+# Get the min value in the AVL
 def get_min_value(node):
     current=node
     while current.left:
         current=current.left
     return current
 
+# Creating the AVL
 def AVL_creation(root,encrypted_rules):
     for enc_rule in encrypted_rules:
         enc_rule_int=int.from_bytes(enc_rule, 'big')
         root=AVL_insertion(root,enc_rule_int,1)
     return root
-    
+
+# Search in the AVL tree
 def AVL_search(root,token,enc_rule): # First search, then deletion, then insertion
         current=root
         found=False
@@ -121,6 +128,7 @@ def AVL_search(root,token,enc_rule): # First search, then deletion, then inserti
             root=AVL_insertion(root,ct,ctr+1)
         return None
 
+# Insertion
 def AVL_insertion(root,token,ctr):
     if not root:
         return Node(token,ctr)
@@ -148,6 +156,7 @@ def AVL_insertion(root,token,ctr):
 
     return root
 
+# Deletion
 def AVL_deletion(root,token): 
     if not root:
         return root,None
@@ -170,47 +179,7 @@ def AVL_deletion(root,token):
     root.height=1+max(get_height(root.left),get_height(root.right))
     return rebalance(root),deleted_ctr
 
-def parse_token_data(token_data):
-    i = 0
-    tokens = []
-    while i < len(token_data):
-        length = int.from_bytes(token_data[i:i+2], 'big')
-        i += 2
-        token = token_data[i:i+length]
-        tokens.append(token)
-        i += length
-    return tokens
-
-def receive_full(conn, n):
-    #Read exactly n bytes from the socket
-    data = b''
-    while len(data) < n:
-        chunk = conn.recv(n - len(data))
-        if not chunk:
-            raise ConnectionError("Socket closed prematurely")
-        data += chunk
-    return data
-
-def receive_payload(conn):
-    token_length=0
-    # Read length of enc_msg (4 bytes)
-    enc_len_bytes = receive_full(conn, 4)
-    enc_len = int.from_bytes(enc_len_bytes, 'big')
-    # Read enc_msg
-    enc_msg = receive_full(conn, enc_len)
-    # Tokenisation type:
-    tokenisation_type_bytes=receive_full(conn,1)
-    tokenisation_type = int.from_bytes(tokenisation_type_bytes, 'big')
-    if tokenisation_type==1:
-        token_length_bytes=receive_full(conn,4)
-        token_length = int.from_bytes(token_length_bytes, 'big')
-    # Read length of token data (4 bytes)
-    token_len_bytes = receive_full(conn, 4)
-    token_len = int.from_bytes(token_len_bytes, 'big')
-    # Read encrypted tokens
-    token_data = receive_full(conn, token_len)
-    return enc_msg, token_data,tokenisation_type,token_length
-
+#####################################################################################################
 # Select tokenisation scheme
 def handle_tokenisation(middlebox_socket):
     global salt_0
@@ -230,185 +199,7 @@ def handle_tokenisation(middlebox_socket):
     conn.close()
     return s
 
-def sample_handle_evaluation(middlebox_socket):
-    conn, addr = middlebox_socket.accept()
-    print("[Middlebox] Sample Evaluation connection from", addr)
-    with conn:
-        length_bytes = conn.recv(4)
-        length = int.from_bytes(length_bytes, 'big')
-        data = b''
-        while len(data) < length:
-            chunk = conn.recv(length - len(data))
-            if not chunk:
-                raise ConnectionError("Connection closed unexpectedly")
-            data += chunk
-        print("[Bob] Received evaluator package.")
-        conn.close()
-    return pickle.loads(data)
-
-
-WIRE_LABEL_SIZE=16
-def evaluate_gate(gate, wire_values):
-    if gate['type'] == 'AND':
-        A, B = gate['in']
-        a_label, a_sel = wire_values[A]
-        b_label, b_sel = wire_values[B]
-
-        index = (a_sel << 1) | b_sel
-        encrypted, out_sel = gate['table'][index]
-
-        h = hashlib.sha256(a_label + b_label).digest()[:WIRE_LABEL_SIZE]
-        out_label = bytes(x ^ y for x, y in zip(encrypted, h))
-        wire_values[gate['out'][0]] = (out_label, out_sel)
-
-    elif gate['type'] == 'XOR':
-        A, B = gate['in']
-        C = gate['out'][0]
-        a_label, a_sel = wire_values[A]
-        b_label, b_sel = wire_values[B]
-        label = bytes(x ^ y for x, y in zip(a_label, b_label))
-        sel = a_sel ^ b_sel
-        wire_values[C] = (label, sel)
-
-    elif gate['type'] == 'INV':
-        A = gate['in'][0]
-        C = gate['out'][0]
-        a_label, a_sel = wire_values[A]
-        wire_values[C] = (a_label, a_sel^1)
-
-    else:
-        raise NotImplementedError(f"Unsupported gate type: {gate['type']}")
-          
-def sample_evaluate_circuit(package):
-    wire_values = {}
-
-    bob_wires = package['middlebox_inputs']
-    bob_indices = package['middlebox_input_wires']
-    alice_wires = package['alice_inputs']
-    alice_indices = package['alice_input_wires']
-    for idx, (label, sel_bit) in zip(bob_indices, bob_wires):
-        wire_values[idx] = (label, sel_bit)
-
-    for idx, (label, sel_bit) in zip(alice_indices, alice_wires):
-        wire_values[idx] = (label, sel_bit)
-    
-    and_index = 0
-    for gate in package['gates']:
-        
-        if gate['type'] == 'AND':
-            gate['table'] = package['garbled_tables'][and_index]['table']
-            and_index += 1
-
-    for gate in package['gates']:
-        evaluate_gate(gate, wire_values)
-
-    return wire_values
-
-def decode_outputs(wire_values, output_map):
-    results = []
-    for idx, mapping in output_map.items():
-        if idx not in wire_values:
-            results.append(None)
-            continue
-        
-        value = wire_values[idx]  # value = (label, sel_bit)
-        
-        if value == mapping['0']:
-            results.append(0)
-        elif value == mapping['1']:
-            results.append(1)
-        else:
-            results.append(None)
-    return results
-
-def forward_to_server(message):
-    try:
-        with socket.socket() as to_server:
-            to_server.connect(('server', 5002))
-            to_server.send(message)
-            return to_server.recv(1024)
-    except Exception as e:
-        return f"❌ Error: {e}".encode()
-
-def bits_to_bytes(bits):
-    # Pad bits to a multiple of 8
-    if len(bits) % 8 != 0:
-        bits += [0] * (8 - len(bits) % 8)
-
-    byte_arr = bytearray()
-    for i in range(0, len(bits), 8):
-        byte = 0
-        for bit in bits[i:i + 8]:
-            byte = (byte << 1) | bit
-        byte_arr.append(byte)
-    return bytes(byte_arr)
-
-import socket
-
-def receive_labels(plaintext_rules, s):
-    conn, addr = s.accept()
-    print(f"[Middlebox] Evaluation Connected to {addr}")
-
-    try:
-        # Step 1: Receive evaluator package
-        length_bytes = conn.recv(4)
-        if len(length_bytes) < 4:
-            raise RuntimeError("Did not receive full length prefix")
-
-        length = int.from_bytes(length_bytes, 'big')        
-        received = b''
-        while len(received) < length:
-            chunk = conn.recv(min(4096, length - len(received)))
-            if not chunk:
-                raise RuntimeError("Connection closed while receiving circuit")
-            received += chunk
-
-        evaluator_package = pickle.loads(received)
-        print("[Middlebox] Received evaluator package.")
-
-        # ✅ Send number of blocks followed by all 16-byte plaintext blocks
-        num_blocks = len(plaintext_rules)
-        conn.sendall(num_blocks.to_bytes(4, 'big'))
-
-        for block in plaintext_rules:
-            assert len(block) == 16
-            conn.sendall(block)
-
-        # ✅ Receive all input labels at once
-        expected_total = num_blocks * 128 * 17
-        labels_raw = b''
-        while len(labels_raw) < expected_total:
-            chunk = conn.recv(expected_total - len(labels_raw))
-            if not chunk:
-                raise RuntimeError("Connection closed while receiving labels")
-            labels_raw += chunk
-
-        if len(labels_raw) != expected_total:
-            raise RuntimeError("Did not receive full label+selbit data")
-
-        all_input_labels = []
-        for i in range(num_blocks):
-            block_raw = labels_raw[i*128*17 : (i+1)*128*17]
-            input_labels = [
-                (block_raw[j:j+16], block_raw[j+16])
-                for j in range(0, 128*17, 17)
-            ]
-            all_input_labels.append(input_labels)
-
-        return evaluator_package, all_input_labels
-
-    except Exception as e:
-        print(f"[!] Error: {e}")
-        return None, []
-    finally:
-        conn.close()
-
-
-
-
-def bytes_to_bits(byte_data):
-    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
-
+#####################################################################################################
 # Window Tokenisation
 def window_tokenisation(plaintext, window_size):
     tokens = []
@@ -458,13 +249,62 @@ def delimiter_tokenisation(plaintext):
             salts.append(salt_0 + counts[token_byte])
     return tokens, salts
 
+#####################################################################################################
+# SAMPLE:
+# Handle the sample evaluation from client
+def sample_handle_evaluation(middlebox_socket):
+    conn, addr = middlebox_socket.accept()
+    print("[Middlebox] Sample Evaluation connection from", addr)
+    with conn:
+        length_bytes = conn.recv(4)
+        length = int.from_bytes(length_bytes, 'big')
+        data = b''
+        while len(data) < length:
+            chunk = conn.recv(length - len(data))
+            if not chunk:
+                raise ConnectionError("[Middlebox] Connection closed unexpectedly")
+            data += chunk
+        print("[Middlebox] Received evaluator package.")
+        conn.close()
+    return pickle.loads(data)
+
+#####################################################################################################
+# Sample evaluation:
+def sample_evaluate_circuit(package):
+    wire_values = {}
+
+    middlebox_wires = package['middlebox_inputs']
+    middlebox_indices = package['middlebox_input_wires']
+
+    client_wires = package['client_inputs']
+    client_indices = package['client_input_wires']
+
+    for idx, (label, sel_bit) in zip(middlebox_indices, middlebox_wires): # Stores the middlebox wire labels
+        wire_values[idx] = (label, sel_bit)
+
+    for idx, (label, sel_bit) in zip(client_indices, client_wires): # Stores the client wire labels
+        wire_values[idx] = (label, sel_bit)
+    
+    and_index = 0 # Evaluation for only gates using the encrypted tables
+    for gate in package['gates']: 
+        if gate['type'] == 'AND':
+            gate['table'] = package['garbled_tables'][and_index]['table']
+            and_index += 1
+
+    for gate in package['gates']:
+        evaluate_gate(gate, wire_values)
+
+    return wire_values
+
+#####################################################################################################
+# prepare the ruleset, where each rule is of 128 bits..
 def prepare(ruleset,tokenisation_type,window_length):
     prepared_rules=[]
     for rule in ruleset:
         if tokenisation_type==1:
-            broken_rules,salts=window_tokenisation(rule,window_length)
+            broken_rules,_=window_tokenisation(rule,window_length)
         else:
-            broken_rules,salts=delimiter_tokenisation(rule)
+            broken_rules,_=delimiter_tokenisation(rule)
 
         for rules in broken_rules:
             padder = padding.PKCS7(128).padder() 
@@ -473,14 +313,68 @@ def prepare(ruleset,tokenisation_type,window_length):
             for i in range(0,len(padded),16):
                 prepared_rules.append((padded[i:i+16]))
 
+    print("[Middlebox] Ruleset prepared for OT")
     return prepared_rules
 
+#####################################################################################################
+# Evaluation of Yao garbled circuit:
+def evaluate_gate(gate, wire_values):
+    if gate['type'] == 'AND':
+        A, B = gate['in']
+        a_label, a_sel = wire_values[A]
+        b_label, b_sel = wire_values[B]
+
+        index = (a_sel << 1) | b_sel
+        encrypted, out_sel = gate['table'][index]
+
+        h = hashlib.sha256(a_label + b_label).digest()[:WIRE_LABEL_SIZE]
+        out_label = bytes(x ^ y for x, y in zip(encrypted, h))
+        wire_values[gate['out'][0]] = (out_label, out_sel)
+
+    elif gate['type'] == 'XOR':
+        A, B = gate['in']
+        C = gate['out'][0]
+        a_label, a_sel = wire_values[A]
+        b_label, b_sel = wire_values[B]
+        label = bytes(x ^ y for x, y in zip(a_label, b_label))
+        sel = a_sel ^ b_sel
+        wire_values[C] = (label, sel)
+
+    elif gate['type'] == 'INV':
+        A = gate['in'][0]
+        C = gate['out'][0]
+        a_label, a_sel = wire_values[A]
+        wire_values[C] = (a_label, a_sel^1)
+
+    else:
+        raise NotImplementedError(f"Unsupported gate type: {gate['type']}")
+
+#####################################################################################################
+# Decoding outputs labels using output map:
+def decode_outputs(wire_values, output_map):
+    results = []
+    for idx, mapping in output_map.items():
+        if idx not in wire_values:
+            results.append(None)
+            continue
+        
+        value = wire_values[idx]  
+        
+        if value == mapping['0']:
+            results.append(0)
+        elif value == mapping['1']:
+            results.append(1)
+        else:
+            results.append(None)
+    return results
+
+#####################################################################################################
+# Evaluate the circuit
 def evaluate_circuit(package,labels):
     
-
-    bob_indices = package['middlebox_input_wires']
-    alice_wires = package['alice_inputs']
-    alice_indices = package['alice_input_wires']
+    middlebox_indices = package['middlebox_input_wires']
+    client_wires = package['client_inputs']
+    client_indices = package['client_input_wires']
 
     and_index = 0
     for gate in package['gates']:
@@ -492,10 +386,10 @@ def evaluate_circuit(package,labels):
     for i in range(0,len(labels)):
         pre_label=labels[i]
         wire_values = {}
-        for idx, (label,sel_bit) in zip(bob_indices, pre_label):
+        for idx, (label,sel_bit) in zip(middlebox_indices, pre_label):
             wire_values[idx] = (label, sel_bit)
 
-        for idx, (label, sel_bit) in zip(alice_indices, alice_wires):
+        for idx, (label, sel_bit) in zip(client_indices, client_wires):
             wire_values[idx] = (label, sel_bit)
 
         for gate in package['gates']:
@@ -505,37 +399,174 @@ def evaluate_circuit(package,labels):
 
     return final_wires_list
 
+#####################################################################################################
+# Recieve the labels corresponding to the plaintext ruleset for yao garbled circuits 
+def receive_labels(plaintext_rules, s):
+    conn, addr = s.accept()
+    print(f"[Middlebox] Evaluation Connected to {addr}")
 
+    try:
+        # Step 1: Receive evaluator package
+        length_bytes = conn.recv(4)
+        if len(length_bytes) < 4:
+            raise RuntimeError("[Middlebox] Did not receive full length prefix")
 
+        length = int.from_bytes(length_bytes, 'big')        
+        received = b''
+        while len(received) < length:
+            chunk = conn.recv(min(4096, length - len(received)))
+            if not chunk:
+                raise RuntimeError("[Middlebox] Connection closed while receiving circuit")
+            received += chunk
+
+        evaluator_package = pickle.loads(received)
+        print("[Middlebox] Received evaluator package.")
+
+        num_blocks = len(plaintext_rules)
+        conn.sendall(num_blocks.to_bytes(4, 'big'))
+
+        for block in plaintext_rules:
+            assert len(block) == 16
+            conn.sendall(block)
+
+        expected_total = num_blocks * 128 * 17
+        labels_raw = b''
+        while len(labels_raw) < expected_total:
+            chunk = conn.recv(expected_total - len(labels_raw))
+            if not chunk:
+                raise RuntimeError("[Middlebox] Connection closed while receiving labels")
+            labels_raw += chunk
+
+        if len(labels_raw) != expected_total:
+            raise RuntimeError("[Middlebox] Did not receive full label+selbit data")
+
+        all_input_labels = []
+        for i in range(num_blocks):
+            block_raw = labels_raw[i*128*17 : (i+1)*128*17]
+            input_labels = [
+                (block_raw[j:j+16], block_raw[j+16])
+                for j in range(0, 128*17, 17)
+            ]
+            all_input_labels.append(input_labels)
+
+        return evaluator_package, all_input_labels
+
+    except Exception as e:
+        print("[Middlebox] ",f"[!] Error: {e}")
+        return None, []
+    finally:
+        conn.close()
+
+#####################################################################################################
+# Parse the encrypted token data:
+def parse_token_data(token_data):
+    i = 0
+    tokens = []
+    while i < len(token_data):
+        length = int.from_bytes(token_data[i:i+2], 'big')
+        i += 2
+        token = token_data[i:i+length]
+        tokens.append(token)
+        i += length
+    return tokens
+
+#####################################################################################################
+def receive_full(conn, n):
+    #Read exactly n bytes from the socket
+    data = b''
+    while len(data) < n:
+        chunk = conn.recv(n - len(data))
+        if not chunk:
+            raise ConnectionError("[Middlebox] Socket closed prematurely")
+        data += chunk
+    return data
+
+# Recieve payload from client
+def receive_payload(conn):
+    token_length=0
+    # Read length of enc_msg (4 bytes)
+    enc_len_bytes = receive_full(conn, 4)
+    enc_len = int.from_bytes(enc_len_bytes, 'big')
+    # Read enc_msg
+    enc_msg = receive_full(conn, enc_len)
+    # Tokenisation type:
+    tokenisation_type_bytes=receive_full(conn,1)
+    tokenisation_type = int.from_bytes(tokenisation_type_bytes, 'big')
+    if tokenisation_type==1:
+        token_length_bytes=receive_full(conn,4)
+        token_length = int.from_bytes(token_length_bytes, 'big')
+    # Read length of token data (4 bytes)
+    token_len_bytes = receive_full(conn, 4)
+    token_len = int.from_bytes(token_len_bytes, 'big')
+    # Read encrypted tokens
+    token_data = receive_full(conn, token_len)
+    return enc_msg, token_data,tokenisation_type,token_length
+
+#####################################################################################################
+# Connection with server
+def forward_to_server(message):
+    try:
+        with socket.socket() as to_server:
+            to_server.connect(('server', 5002))
+            to_server.send(message)
+            return to_server.recv(1024)
+    except Exception as e:
+        return f"❌ Error: {e}".encode()
+
+# Mathemtical functions################################################################################
+def bits_to_bytes(bits):
+    # Pad bits to a multiple of 8
+    if len(bits) % 8 != 0:
+        bits += [0] * (8 - len(bits) % 8)
+
+    byte_arr = bytearray()
+    for i in range(0, len(bits), 8):
+        byte = 0
+        for bit in bits[i:i + 8]:
+            byte = (byte << 1) | bit
+        byte_arr.append(byte)
+    return bytes(byte_arr)
+
+def bytes_to_bits(byte_data):
+    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
+
+#####################################################################################################
 def main():
     # Setup middlebox
     mb = socket.socket()
     mb.bind(('0.0.0.0', 5001))
     mb.listen(15)
     print("[Middlebox] Middlebox up...")
-    global window_length
 
+#####################################################################################################   
     tokenisation_type=handle_tokenisation(mb) 
 
+#####################################################################################################
+# Sample part:
     sample_package=sample_handle_evaluation(mb)
     sample_wire_values = sample_evaluate_circuit(sample_package)
-
     sample_output_bits = decode_outputs(sample_wire_values, sample_package['output_map'])
     sample_output_bytes = bits_to_bytes(sample_output_bits)
     print("[Middleobx] Sample Output (hex):", sample_output_bytes.hex())
 
+#####################################################################################################
     prepared_ruleset=prepare(ruleset,tokenisation_type,window_length)
+
+#####################################################################################################
+    print("[Middlebox] Evaluating the circuit ...")
     package,labels=receive_labels(prepared_ruleset,mb)
     wire_values = evaluate_circuit(package,labels)
     encrypted_ruleset=[]
     for i in range(0,len(wire_values)):
         output_bits = decode_outputs(wire_values[i], package['output_map'])
         encrypted_ruleset.append(bits_to_bytes(output_bits))
+    print("[Middlebox] Encryption of ruleset done..!")
+#####################################################################################################
+# AVL Root for faster searching and updation
     root=AVL_creation(None,encrypted_ruleset)
-
-
+    print("[Middlebox] AVL Tree created")
+#####################################################################################################
     while True:
-        
         try:
             conn = None  
             # Connection with client
@@ -544,14 +575,15 @@ def main():
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             print("[Middlebox] Encrypted message:", encrypted_msg.hex())
             print("[Middlebox] Encrypted tokens:", token_stream.hex())
-            parsed_tokens=parse_token_data(token_stream)
+
+            parsed_tokens=parse_token_data(token_stream) # parse the token data
             # Forward as-is to the server
             if tokenisation_type==1:
                 if token_length==window_length:
                     payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
                     server_response = forward_to_server(payload)
                     conn.send(server_response)
-                else:
+                else: # Check if tokenisation length is changed by client in order to avoid detection
                     warning="Hacking attempt detected at [Middlebox]"
                     conn.send(warning.encode())
             else:
@@ -563,6 +595,8 @@ def main():
         finally:
             conn.close()
 
-
+#####################################################################################################
 if __name__ == "__main__":
     main()
+
+#####################################################################################################
