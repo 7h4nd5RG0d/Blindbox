@@ -170,12 +170,16 @@ def generate_delta(seed: bytes, counter: int = 0) -> bytes:
     delta[-1] |= 1  
     return bytes(delta)
 
+def prf(seed: bytes, label: str) -> bytes:
+    return hmac.new(seed, label.encode(), hashlib.sha256).digest()[:16]  # 128-bit
+
 # Generation of wire labels
-def generate_wire_labels(num_wires, delta):
+def generate_wire_labels(num_wires, delta, k_rand):
     wire_labels = {}
     for i in range(num_wires):
-        base_label = os.urandom(WIRE_LABEL_SIZE)
-        sel_bit = random.randint(0, 1) # Select bit
+        label_material = prf(k_rand, f'label-{i}')
+        base_label = label_material[:16]
+        sel_bit = label_material[0] & 1 # select bit
         label_0 = base_label if sel_bit == 0 else bytes(a ^ b for a, b in zip(base_label, delta)) # Label for 0 bit
         label_1 = bytes(a ^ b for a, b in zip(label_0, delta)) # Label for 1 bit
         wire_labels[i] = ((label_0, 0 if sel_bit == 0 else 1), (label_1, 1 if sel_bit == 0 else 0))
@@ -320,7 +324,6 @@ def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits):
             "1": wire_labels[idx][1]
         } for idx in output_indices
     }
-
     return {
         "garbled_tables": garbled_tables,
         "middlebox_input_wires": middlebox_input_indices,
@@ -411,15 +414,15 @@ def main():
     option, min_length = tokenisation_selection()
 #####################################################################################################
 
-    circuit_path = "AES1-128.bristol" 
+    circuit_path = "aes_128.bristol" 
     circuit = parse_bristol_circuit(circuit_path)
     print("[Client] AES circuit ready..!")
 #####################################################################################################
 
     # Sample check, for is the circuit working correctly #############################################
     sample_key_hex = '2b7e151628aed2a6abf7158809cf4f3c'
-    sample_pt_hex  = '6bc1bee22e409f96e93d7e117393172a'
-    sample_expected_ct_hex = '3ad77bb40d7a3660a89ecaf32466ef97'
+    sample_pt_hex  = 'ae2d8a571e03ac9c9eb76fac45af8e51'
+    sample_expected_ct_hex = 'f5d3d58503b9699de785895a96fdbaaf'
 
     sample_key_bits = hex_to_bits(sample_key_hex)
     sample_pt_bits = hex_to_bits(sample_pt_hex)
@@ -433,7 +436,7 @@ def main():
     print("[Client] Match:           ", sample_output_hex == sample_expected_ct_hex)
 
     sample_delta = generate_delta(k_rand)
-    sample_wire_labels = generate_wire_labels(circuit["num_wires"], sample_delta)
+    sample_wire_labels = generate_wire_labels(circuit["num_wires"], sample_delta,k_rand)
     sample_garbled_tables = garble_circuit(circuit, sample_wire_labels, sample_delta)
     sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits)
     send_sample_garbled_output(sample_evaluator_package)
@@ -442,7 +445,7 @@ def main():
 
     k_bits = bytes_to_bits(k) 
     delta = generate_delta(k_rand)   # will be generate based on k_rand
-    wire_labels = generate_wire_labels(circuit["num_wires"], delta)
+    wire_labels = generate_wire_labels(circuit["num_wires"], delta, k_rand)
     garbled_tables = garble_circuit(circuit, wire_labels, delta)
     evaluator_package = prepare_evaluator_package(circuit, wire_labels, garbled_tables,k_bits)
 

@@ -5,8 +5,7 @@ RUN pip install cryptography
 RUN pip install pyzmq pycryptodome bitarray
 WORKDIR /app
 
-COPY server.py .
-COPY entrypoint.sh .
+COPY . .
 
 RUN chmod +x entrypoint.sh
 

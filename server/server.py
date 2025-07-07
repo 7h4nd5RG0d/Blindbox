@@ -3,11 +3,14 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from collections import defaultdict 
 import socket
 import random
 import hashlib
 import re
-
+import hmac
+import os
+import pickle
 #####################################################################################################
 # GLOBAL PARAMS
 # Diffie-Hellman params
@@ -16,10 +19,12 @@ g = 5
 # Keys
 k_ssl=0
 k=0
+
 k_rand=0
 
 RS=2**40
 salt_int=0
+WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
 
 #####################################################################################################
 # Key exchange with client
@@ -46,6 +51,201 @@ def handle_key_exchange(server_socket):
     k_rand=key[48:64]
     conn.close()
     
+#####################################################################################################
+# Parse Bristol circuit file
+def parse_bristol_circuit(filepath):
+    with open(filepath, 'r') as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    _, num_wires = map(int, lines[0].split()) # 1st line stores number of gates and number of wires
+    inputs_info = list(map(int, lines[1].split()))
+
+    if len(inputs_info) == 3:
+        input1, input2, num_outputs = inputs_info # 2nd line stores the number of inputs of server, middlebox and number of outputs in bits
+    else:
+        raise ValueError("[Server] Unexpected header in Bristol file: expected 3 values on line 2.")
+
+    gates = [] # Stores the gates
+    input_counts = defaultdict(int)
+    output_candidates = set()
+
+    for line in lines[2:]:
+        tokens = line.strip().split()
+        n_in, n_out = int(tokens[0]), int(tokens[1])
+        inputs = list(map(int, tokens[2:2 + n_in]))
+        outputs = list(map(int, tokens[2 + n_in:2 + n_in + n_out]))
+        gate_type = tokens[-1]
+        # Track inputs count
+        for i in inputs:
+            input_counts[i] += 1
+        # Mark outputs as candidates
+        for o in outputs:
+            output_candidates.add(o)
+        gates.append({"type": gate_type, "in": inputs, "out": outputs})
+    # Final outputs are candidates that never appeared as inputs
+    real_outputs = [w for w in output_candidates if input_counts[w] == 0] # Stores the output wires..Since they wont be used as input wires....
+    return {
+        "num_wires": num_wires,
+        "inputs_garbler": input1,
+        "inputs_middlebox": input2,
+        "num_outputs": num_outputs,
+        "output_wires": real_outputs,
+        "gates": gates
+    }
+
+# Generate a global delta for Free XOR
+def generate_delta(seed: bytes, counter: int = 0) -> bytes:
+    assert len(seed) >= 16, "[Server] Seed (k_rand) must be at least 128 bits"
+
+    # Use HMAC to derive 128-bit pseudorandom value from k_rand and counter
+    h = hmac.new(seed, f'delta-{counter}'.encode(), hashlib.sha256).digest()
+    delta = bytearray(h[:WIRE_LABEL_SIZE])
+    delta[-1] |= 1  
+    return bytes(delta)
+
+def prf(seed: bytes, label: str) -> bytes:
+    return hmac.new(seed, label.encode(), hashlib.sha256).digest()[:16]  # 128-bit
+
+# Generation of wire labels
+def generate_wire_labels(num_wires, delta,k_rand):
+    wire_labels = {}
+    for i in range(num_wires):
+        label_material = prf(k_rand, f'label-{i}')
+        base_label = label_material[:16]
+        sel_bit = label_material[0] & 1 # select bit
+        label_0 = base_label if sel_bit == 0 else bytes(a ^ b for a, b in zip(base_label, delta)) # Label for 0 bit
+        label_1 = bytes(a ^ b for a, b in zip(label_0, delta)) # Label for 1 bit
+        wire_labels[i] = ((label_0, 0 if sel_bit == 0 else 1), (label_1, 1 if sel_bit == 0 else 0))
+    return wire_labels
+
+# Garbling of AND gate
+def garble_and_gate(A, B, C, wire_labels):
+    table = [None] * 4
+    for a in (0, 1):
+        for b in (0, 1):
+            inA, selA = wire_labels[A][a]
+            inB, selB = wire_labels[B][b]
+            out_label, out_sel = wire_labels[C][a & b]
+            index = (selA << 1) | selB
+            h = hashlib.sha256(inA + inB).digest()[:WIRE_LABEL_SIZE]
+            encrypted = bytes(x ^ y for x, y in zip(out_label, h))
+            table[index] = (encrypted, out_sel)
+    return {
+        "type": "AND",
+        "in": (A, B),
+        "out": C,
+        "table": table
+    }
+
+# Garble the circuit using Free XOR and basic AND gate garbling
+def garble_circuit(circuit, wire_labels, delta):
+    garbled_tables = []
+    for gate in circuit["gates"]:
+        gtype = gate["type"]
+        in_wires = gate["in"]
+        out_wires = gate["out"]
+
+        if gtype == "XOR": # Simple free XOR
+            A, B = in_wires
+            C = out_wires[0]
+            (a0, sa0), _ = wire_labels[A]
+            (b0, sb0), _ = wire_labels[B]
+            c0 = bytes(x ^ y for x, y in zip(a0, b0))
+            c1 = bytes(x ^ y for x, y in zip(c0, delta))
+            wire_labels[C] = ((c0, sa0 ^ sb0), (c1, 1 ^ (sa0 ^ sb0)))
+
+        elif gtype == "INV":
+            A = in_wires[0]
+            (a0,sa0)=wire_labels[A][0]
+            (a1,sa1)=wire_labels[A][1]
+            C = out_wires[0]
+            wire_labels[C] = ((a1,sa0), (a0,sa1))
+
+        elif gtype == "AND": # Can be optimised using garbled gate reduction(GRR)
+            A, B = in_wires
+            C = out_wires[0]
+            garbled_tables.append(garble_and_gate(A, B, C, wire_labels))
+
+        else:
+            raise NotImplementedError("[Client] ",f"Gate {gtype} not supported.")
+    return garbled_tables
+
+# Function for generating labels for inputs in garbler side
+def encode_inputs(bits, wire_labels, offset):
+    return [wire_labels[offset + i][bit] for i, bit in enumerate(bits)]
+
+# Package to be sent ot middlebox
+def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits):
+    inputs_offset = circuit["inputs_garbler"]
+
+    middlebox_input_indices = list(range(inputs_offset, inputs_offset + 128))
+    output_indices = circuit["output_wires"]
+
+    client_input_indices = list(range(0, inputs_offset))
+    client_input_labels = encode_inputs(k_bits, wire_labels, 0)  # <- Garbled input: evaluator doesn't know the bit
+    # Output wire indices
+    output_map = {
+        idx: {
+            "0": wire_labels[idx][0],
+            "1": wire_labels[idx][1]
+        } for idx in output_indices
+    }
+    return {
+        "garbled_tables": garbled_tables,
+        "middlebox_input_wires": middlebox_input_indices,
+        "output_map": output_map,
+        "client_inputs": client_input_labels,
+        "client_input_wires": client_input_indices,
+        "output_wires": output_indices,
+        "gates": circuit["gates"],
+    }
+
+def send_garbled_output(s,evaluator_package, wire_labels, offset):
+    serialized = pickle.dumps(evaluator_package)
+    length = len(serialized).to_bytes(4, 'big')
+
+    conn, addr = s.accept()
+    print("[Server] Garbling connection from", addr)
+   
+    conn.sendall(length + serialized)
+
+    try:
+        # Receive number of blocks (4 bytes)
+        num_blocks_bytes = conn.recv(4)
+        if len(num_blocks_bytes) < 4:
+            raise RuntimeError("[Server] Failed to receive number of plaintext blocks")
+        num_blocks = int.from_bytes(num_blocks_bytes, 'big')
+
+        # Receive all plaintext blocks
+        total_plaintext_len = num_blocks * 16
+        received = b''
+        while len(received) < total_plaintext_len:
+            chunk = conn.recv(total_plaintext_len - len(received))
+            if not chunk:
+                raise RuntimeError("[Server] Connection closed while receiving plaintext blocks")
+            received += chunk
+
+        # Prepare and send all labels
+        payload = b''
+        for i in range(num_blocks):
+            block = received[i*16:(i+1)*16]
+            bits = []
+            for byte in block:
+                bits.extend([(byte >> j) & 1 for j in reversed(range(8))])
+            assert len(bits) == 128
+
+            for j, bit in enumerate(bits):
+                label, sel_bit = wire_labels[offset + j][bit]
+                payload += label + bytes([sel_bit])  # 17 bytes per input bit
+
+        assert len(payload) == num_blocks * 128 * 17
+        conn.sendall(payload)
+    except Exception as e:
+        print(f"[!] Error in send_garbled_output: {e}")
+    finally:
+        conn.close()
+        print("[Server] garbled tables and labels sent to middlebox")
+
 #####################################################################################################
 def handle_middlebox_messages(server_socket):
     print("[Server] Ready to receive from middlebox...")
@@ -214,6 +414,10 @@ def parse_token_data(token_data):
         i += length
     return tokens
 
+#Mathematical functions##############################################################################
+def bytes_to_bits(byte_data):
+    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
+
 #####################################################################################################
 def main():
     s = socket.socket()
@@ -223,6 +427,24 @@ def main():
 
 #####################################################################################################
     handle_key_exchange(s)
+
+#####################################################################################################
+    circuit_path = "aes_128.bristol" 
+    circuit = parse_bristol_circuit(circuit_path)
+    print("[Server] AES circuit ready..!")
+
+#####################################################################################################
+
+    k_bits = bytes_to_bits(k) 
+    delta = generate_delta(k_rand)   # will be generate based on k_rand
+    wire_labels = generate_wire_labels(circuit["num_wires"], delta, k_rand)
+    garbled_tables = garble_circuit(circuit, wire_labels, delta)
+    evaluator_package = prepare_evaluator_package(circuit, wire_labels, garbled_tables,k_bits)
+
+    # Need to use OT
+    send_garbled_output(s,evaluator_package,wire_labels,circuit['inputs_garbler'])
+
+#####################################################################################################
     handle_middlebox_messages(s)
 
 #####################################################################################################
