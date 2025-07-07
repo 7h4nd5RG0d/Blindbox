@@ -476,15 +476,15 @@ def main():
         for token in tokens:
             padder = padding.PKCS7(128).padder() 
             padded = padder.update(token) + padder.finalize()
-            encryptor = cipher.encryptor()
-            ct = encryptor.update(padded) + encryptor.finalize()
-            pre_encrypted_tokens.append(ct)
+            padded_bits=bytes_to_bits(padded)
+            out_bits=evaluate_circuit(circuit,k_bits+padded_bits)
+            pre_encrypted_tokens.append(bits_to_bytes(out_bits))
 
         idx=0
         for token in pre_encrypted_tokens:
             cipher = Cipher(algorithms.AES(token), modes.ECB(), backend=default_backend())
             padder = padding.PKCS7(128).padder() 
-            salt_bytes = salts[idx].to_bytes(16, byteorder='big')
+            salt_bytes = salts[idx].to_bytes(8, byteorder='big')
             padded = padder.update(salt_bytes) + padder.finalize()
             encryptor = cipher.encryptor()
             ct = encryptor.update(padded) + encryptor.finalize()

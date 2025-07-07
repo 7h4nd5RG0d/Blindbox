@@ -26,6 +26,22 @@ RS=2**64
 salt_int=0
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
 
+#Mathematical functions##############################################################################
+def bytes_to_bits(byte_data):
+    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
+
+def bits_to_bytes(bits):
+    if len(bits) % 8 != 0:
+        bits += [0] * (8 - (len(bits) % 8))
+
+    byte_arr = bytearray()
+    for i in range(0, len(bits), 8):
+        byte = 0
+        for b in bits[i:i+8]:
+            byte = (byte << 1) | b
+        byte_arr.append(byte)
+    return bytes(byte_arr)
+
 #####################################################################################################
 # Key exchange with client
 def handle_key_exchange(server_socket):
@@ -246,8 +262,27 @@ def send_garbled_output(s,evaluator_package, wire_labels, offset):
         conn.close()
         print("[Server] garbled tables and labels sent to middlebox")
 
+# Evaluating circuit /// Trivial just for CHECKING
+def evaluate_circuit(circuit, input_bits):
+    total_wires = circuit["num_wires"]
+    wire_values = [0] * total_wires 
+
+    for idx, bit in enumerate(input_bits):
+        wire_values[idx] = bit
+
+    for gate in circuit["gates"]:
+        typ = gate["type"]
+        ins = gate["in"]
+        out = gate["out"][0]
+        if typ == "XOR":
+            wire_values[out] = wire_values[ins[0]] ^ wire_values[ins[1]]
+        elif typ == "AND":
+            wire_values[out] = wire_values[ins[0]] & wire_values[ins[1]]
+        elif typ == "INV":
+            wire_values[out] = 1 - wire_values[ins[0]]
+    return wire_values[-circuit["num_outputs"]:]
 #####################################################################################################
-def handle_middlebox_messages(server_socket):
+def handle_middlebox_messages(server_socket,circuit):
     print("[Server] Ready to receive from middlebox...")
     while True:
         try:
@@ -268,18 +303,19 @@ def handle_middlebox_messages(server_socket):
                 server_tokens,salts=delimiter_tokenisation(dec_data.decode())
             
             cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
+            k_bits=bytes_to_bits(k)
             for token in server_tokens:
                 padder = padding.PKCS7(128).padder() 
                 padded = padder.update(token) + padder.finalize()
-                encryptor = cipher.encryptor()
-                ct = encryptor.update(padded) + encryptor.finalize()
-                server_pre_enc_tokens.append(ct)
+                padded_bits=bytes_to_bits(padded)
+                out_bits=evaluate_circuit(circuit,k_bits+padded_bits)
+                server_pre_enc_tokens.append(bits_to_bytes(out_bits))
             
             idx=0
             for token in server_pre_enc_tokens:
                 cipher = Cipher(algorithms.AES(token), modes.ECB(), backend=default_backend())
                 padder = padding.PKCS7(128).padder() 
-                salt_bytes = salts[idx].to_bytes(16, byteorder='big')
+                salt_bytes = salts[idx].to_bytes(8, byteorder='big')
                 padded = padder.update(salt_bytes) + padder.finalize()
                 encryptor = cipher.encryptor()
                 ct = encryptor.update(padded) + encryptor.finalize()
@@ -414,10 +450,6 @@ def parse_token_data(token_data):
         i += length
     return tokens
 
-#Mathematical functions##############################################################################
-def bytes_to_bits(byte_data):
-    return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
-
 #####################################################################################################
 def main():
     s = socket.socket()
@@ -445,7 +477,7 @@ def main():
     send_garbled_output(s,evaluator_package,wire_labels,circuit['inputs_garbler'])
 
 #####################################################################################################
-    handle_middlebox_messages(s)
+    handle_middlebox_messages(s,circuit)
 
 #####################################################################################################
 

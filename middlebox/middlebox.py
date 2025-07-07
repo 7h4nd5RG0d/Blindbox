@@ -108,7 +108,7 @@ def AVL_creation(root,encrypted_rules):
         ct = encryptor.update(padded) + encryptor.finalize()  
         enc_rule_int=int.from_bytes(ct, 'big')
         enc_rule_int=enc_rule_int%RS
-        root=AVL_insertion(root,enc_rule_int,int.from_bytes(enc_rule, 'big'),1)
+        root=AVL_insertion(root,enc_rule_int,enc_rule,1)
     return root
 
 # Search in the AVL tree
@@ -603,6 +603,10 @@ def bits_to_bytes(bits):
 def bytes_to_bits(byte_data):
     return [int(bit) for byte in byte_data for bit in f'{byte:08b}'] 
 
+def bits_to_hex(bits):
+    bytes_out = [int("".join(map(str, bits[i:i+8])), 2) for i in range(0, len(bits), 8)]
+    return ''.join(f'{b:02x}' for b in bytes_out)
+
 #####################################################################################################
 def main():
     # Setup middlebox
@@ -649,10 +653,12 @@ def main():
 # AVL Root for faster searching and updation
     root=AVL_creation(None,encrypted_ruleset)
     print("[Middlebox] AVL Tree created")
+    present_root=root
 #####################################################################################################
     while True:
         try:
             conn = None  
+            root=present_root
             # Connection with client
             conn, addr = mb.accept()
             found=False
