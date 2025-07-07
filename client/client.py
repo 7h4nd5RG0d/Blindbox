@@ -17,7 +17,7 @@ import sys
 #####################################################################################################
 # GLOBAL PARAMS:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-RS=2**40 # Used to keep ciphertext small
+RS=2**64 # Used to keep ciphertext small
 salt=os.urandom(8)
 salt_int = int.from_bytes(salt, byteorder='big') # Initial salt, changes in every connection
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
@@ -490,7 +490,7 @@ def main():
             ct = encryptor.update(padded) + encryptor.finalize()
             ct_int=int.from_bytes(ct, byteorder='big')
             ct_int=ct_int%RS # To reduce BW
-            ct_bytes = ct_int.to_bytes(5, byteorder='big')
+            ct_bytes = ct_int.to_bytes(8, byteorder='big')
             encrypted_tokens.append(ct_bytes)
             idx=idx+1
 

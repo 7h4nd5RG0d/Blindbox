@@ -18,15 +18,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 ruleset = ['hack', 'malware', 'attack', 'exploit']
 min_length = min(len(word) for word in ruleset)
 window_length=min(min_length,8) # Window length for tokenisation
-RS=2**40
+RS=2**64
 salt_0=0 # Initial salt
 WIRE_LABEL_SIZE=16
 
 #####################################################################################################
 # AVL Tree class and functions:
 class Node:
-    def __init__(self,key,ctr):
+    def __init__(self,key,ct,ctr):
         self.key=key
+        self.ct=ct
         self.ctr=ctr
         self.left=None
         self.right=None
@@ -99,43 +100,50 @@ def get_min_value(node):
 # Creating the AVL
 def AVL_creation(root,encrypted_rules):
     for enc_rule in encrypted_rules:
-        enc_rule_int=int.from_bytes(enc_rule, 'big')
-        root=AVL_insertion(root,enc_rule_int,1)
+        cipher = Cipher(algorithms.AES(enc_rule), modes.ECB(), backend=default_backend())
+        padder = padding.PKCS7(128).padder() 
+        salt_final = (salt_0 + 1).to_bytes(8, byteorder='big')
+        padded = padder.update(salt_final) + padder.finalize()
+        encryptor = cipher.encryptor()
+        ct = encryptor.update(padded) + encryptor.finalize()  
+        enc_rule_int=int.from_bytes(ct, 'big')
+        enc_rule_int=enc_rule_int%RS
+        root=AVL_insertion(root,enc_rule_int,int.from_bytes(enc_rule, 'big'),1)
     return root
 
 # Search in the AVL tree
-def AVL_search(root,token,enc_rule): # First search, then deletion, then insertion
-        current=root
-        found=False
+def AVL_search(root,token): # First search, then deletion, then insertion
+    current=root
+    found=False
 
-        while current:
-            if token==current.key:
-                found=True
-                break
-            elif token<current.key:
-                current=current.left
-            else:
-                current=current.right
+    while current:
+        if token==current.key:
+            found=True
+            break
+        elif token<current.key:
+            current=current.left
+        else:
+            current=current.right
 
-        if found:
-            root,ctr=AVL_deletion(root,token)
-            cipher = Cipher(algorithms.AES(enc_rule), modes.ECB(), backend=default_backend())
-            padder = padding.PKCS7(128).padder() 
-            salt_final = (salt_0 + ctr + 1).to_bytes(16, byteorder='big')
-            padded = padder.update(salt_final) + padder.finalize()
-            encryptor = cipher.encryptor()
-            ct = encryptor.update(padded) + encryptor.finalize()            
-            root=AVL_insertion(root,ct,ctr+1)
-        return None
+    if found:
+        root,ciphertext,ctr=AVL_deletion(root,token)
+        cipher = Cipher(algorithms.AES(ciphertext), modes.ECB(), backend=default_backend())
+        padder = padding.PKCS7(128).padder() 
+        salt_final = (salt_0 + ctr + 1).to_bytes(8, byteorder='big')
+        padded = padder.update(salt_final) + padder.finalize()
+        encryptor = cipher.encryptor()
+        ct = encryptor.update(padded) + encryptor.finalize()            
+        root=AVL_insertion(root,int.from_bytes(ct, 'big')%RS,ciphertext,ctr+1)
+    return root,found
 
 # Insertion
-def AVL_insertion(root,token,ctr):
+def AVL_insertion(root,token,ct,ctr):
     if not root:
-        return Node(token,ctr)
+        return Node(token,ct,ctr)
     elif token<root.key:
-        root.left=AVL_insertion(root.left,token,ctr)
+        root.left=AVL_insertion(root.left,token,ct,ctr)
     else:
-        root.right=AVL_insertion(root.right,token,ctr)
+        root.right=AVL_insertion(root.right,token,ct,ctr)
     
     root.height=1+max(get_height(root.left),get_height(root.right))
     balance=get_balance(root)
@@ -159,25 +167,28 @@ def AVL_insertion(root,token,ctr):
 # Deletion
 def AVL_deletion(root,token): 
     if not root:
-        return root,None
+        return root,None,None
     deleted_ctr=None
+    ciphertext=None
     if token<root.key:
-        root.left, deleted_ctr=AVL_deletion(root.left,token)
+        root.left, ciphertext,deleted_ctr=AVL_deletion(root.left,token)
     elif token>root.key:
-        root.right, deleted_ctr=AVL_deletion(root.right,token)
+        root.right, ciphertext,deleted_ctr=AVL_deletion(root.right,token)
     else:
         deleted_ctr=root.ctr
+        ciphertext=root.ct
         if not root.left:
-            return root.right,deleted_ctr
+            return root.right,ciphertext,deleted_ctr
         elif not root.right:
-            return root.left,deleted_ctr
+            return root.left,ciphertext,deleted_ctr
         temp=get_min_value(root.right)
         root.key=temp.key
         root.ctr=temp.ctr
-        root.right,_=AVL_deletion(root.right,temp.key)
+        root.ct=temp.ct
+        root.right,_,_=AVL_deletion(root.right,temp.key)
     
     root.height=1+max(get_height(root.left),get_height(root.right))
-    return rebalance(root),deleted_ctr
+    return rebalance(root),ciphertext,deleted_ctr
 
 #####################################################################################################
 # Select tokenisation scheme
@@ -527,7 +538,8 @@ def parse_token_data(token_data):
         length = int.from_bytes(token_data[i:i+2], 'big')
         i += 2
         token = token_data[i:i+length]
-        tokens.append(token)
+        token_int=int.from_bytes(token,'big')
+        tokens.append(token_int)
         i += length
     return tokens
 
@@ -618,7 +630,7 @@ def main():
     package_client,labels_client=receive_labels_client(prepared_ruleset,mb)
     package_server,labels_server=receive_labels_server(prepared_ruleset)
 
-    if  (labels_server!=labels_client) : # Checks if garbled circuit/tables and labels are same.....
+    if  (labels_server!=labels_client) or (package_client!=package_server): # Checks if garbled circuit/tables and labels are same.....
         warning="Hacking attempt detected at [Middlebox]"
         print("[Middlebox] Hacking attempt detected here...")
         conn, addr = mb.accept()
@@ -643,12 +655,21 @@ def main():
             conn = None  
             # Connection with client
             conn, addr = mb.accept()
+            found=False
             print(f"[Middlebox] Connection from {addr}")
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             print("[Middlebox] Encrypted message:", encrypted_msg.hex())
             print("[Middlebox] Encrypted tokens:", token_stream.hex())
 
             parsed_tokens=parse_token_data(token_stream) # parse the token data
+            for token in parsed_tokens:
+                root,present=AVL_search(root,token)
+                found= found or present
+
+            if found:
+                warning="[Middlebox] packet dropped since suspicious"
+                conn.send(warning.encode())
+                continue
             # Forward as-is to the server
             if (tokenisation_type==1):
                 if token_length==window_length:

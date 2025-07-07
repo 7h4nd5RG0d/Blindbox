@@ -22,7 +22,7 @@ k=0
 
 k_rand=0
 
-RS=2**40
+RS=2**64
 salt_int=0
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
 
@@ -285,7 +285,7 @@ def handle_middlebox_messages(server_socket):
                 ct = encryptor.update(padded) + encryptor.finalize()
                 ct_int=int.from_bytes(ct, byteorder='big')
                 ct_int=ct_int%RS
-                ct_bytes = ct_int.to_bytes(5, byteorder='big')
+                ct_bytes = ct_int.to_bytes(8, byteorder='big')
                 server_enc_tokens.append(ct_bytes)
 
             print("[Server] Received:", dec_data.decode())
