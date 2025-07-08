@@ -197,11 +197,8 @@ def handle_tokenisation(middlebox_socket):
     conn, addr = middlebox_socket.accept()
     print("[Middlebox] Tokenisation connection from", addr)
     s=random.randint(1,2)
-    if s==2:
-        conn.send(str(s).encode())
-    else:
-        msg = f"{s},{window_length}"
-        conn.send(msg.encode())
+    msg = f"{s},{window_length}"
+    conn.send(msg.encode())
     
     print("[Middlebox] Tokenisation method:", s)
     salt_0_bytes=conn.recv(1024)
@@ -236,7 +233,7 @@ def window_tokenisation_partial(plaintext, window_size):
     return tokens
 
 # Delimiter Tokenisation
-def delimiter_tokenisation(plaintext):
+def delimiter_tokenisation(plaintext,window_size):
     delimiters = ['=', ';', ':', ',', ' ']
     salts=[]
     counts={}
@@ -246,9 +243,9 @@ def delimiter_tokenisation(plaintext):
     for token in raw_tokens:
         if not token:
             continue
-        if len(token) > 8:
+        if len(token) > window_size:
             # Replace long token with 8-byte windows
-            broken_tokens = window_tokenisation_partial(token, 8)
+            broken_tokens = window_tokenisation_partial(token, window_size)
             for t in broken_tokens:
                 counts[t] = counts.get(t, 0) + 1
                 tokens.append(t)
@@ -315,7 +312,7 @@ def prepare(ruleset,tokenisation_type,window_length):
         if tokenisation_type==1:
             broken_rules,_=window_tokenisation(rule,window_length)
         else:
-            broken_rules,_=delimiter_tokenisation(rule)
+            broken_rules,_=delimiter_tokenisation(rule,window_length)
 
         for rules in broken_rules:
             padder = padding.PKCS7(128).padder() 
@@ -565,9 +562,9 @@ def receive_payload(conn):
     # Tokenisation type:
     tokenisation_type_bytes=receive_full(conn,1)
     tokenisation_type = int.from_bytes(tokenisation_type_bytes, 'big')
-    if tokenisation_type==1:
-        token_length_bytes=receive_full(conn,4)
-        token_length = int.from_bytes(token_length_bytes, 'big')
+
+    token_length_bytes=receive_full(conn,4)
+    token_length = int.from_bytes(token_length_bytes, 'big')
     # Read length of token data (4 bytes)
     token_len_bytes = receive_full(conn, 4)
     token_len = int.from_bytes(token_len_bytes, 'big')
@@ -677,18 +674,15 @@ def main():
                 conn.send(warning.encode())
                 continue
             # Forward as-is to the server
-            if (tokenisation_type==1):
-                if token_length==window_length:
-                    payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
-                    server_response = forward_to_server(payload)
-                    conn.send(server_response)
-                else: # Check if tokenisation length is changed by client in order to avoid detection
-                    warning="Hacking attempt detected at [Middlebox]"
-                    conn.send(warning.encode())
-            else:
-                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ len(token_stream).to_bytes(4, 'big')+token_stream
+
+            if token_length==window_length:
+                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
                 server_response = forward_to_server(payload)
                 conn.send(server_response)
+            else: # Check if tokenisation length is changed by client in order to avoid detection
+                warning="Hacking attempt detected at [Middlebox]"
+                conn.send(warning.encode())
+
         except Exception as e:
             print("[Middlebox] Error:", str(e))
         finally:

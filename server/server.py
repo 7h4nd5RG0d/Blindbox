@@ -300,7 +300,7 @@ def handle_middlebox_messages(server_socket,circuit):
             if tokenisation_type==1: # For checking if tokens are correctly created in client side
                 server_tokens,salts=window_tokenisation(dec_data.decode(),token_length)
             else:
-                server_tokens,salts=delimiter_tokenisation(dec_data.decode())
+                server_tokens,salts=delimiter_tokenisation(dec_data.decode(),token_length)
             
             cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
             k_bits=bytes_to_bits(k)
@@ -361,7 +361,7 @@ def window_tokenisation_partial(plaintext, window_size):
     return tokens
 
 # Delimiter Tokenisation
-def delimiter_tokenisation(plaintext):
+def delimiter_tokenisation(plaintext,window_size):
     delimiters = ['=', ';', ':', ',', ' ']
     salts=[]
     counts={}
@@ -371,9 +371,9 @@ def delimiter_tokenisation(plaintext):
     for token in raw_tokens:
         if not token:
             continue
-        if len(token) > 8:
+        if len(token) > window_size:
             # Replace long token with 8-byte windows
-            broken_tokens = window_tokenisation_partial(token, 8)
+            broken_tokens = window_tokenisation_partial(token, window_size)
             for t in broken_tokens:
                 counts[t] = counts.get(t, 0) + 1
                 tokens.append(t)

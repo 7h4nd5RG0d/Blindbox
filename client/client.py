@@ -21,6 +21,7 @@ RS=2**64 # Used to keep ciphertext small
 salt=os.urandom(8)
 salt_int = int.from_bytes(salt, byteorder='big') # Initial salt, changes in every connection
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
+counts={} # counter
 
 #####################################################################################################
 # Diffie Helman Key Exchange and exchange salt
@@ -55,17 +56,14 @@ def tokenisation_selection():
     s.send(salt)
     s.close()
     print("[Client] Salt and tokenisation details exchanged with middlebox")
-    if ',' in option:
-        option_str, min_len_str = option.split(',')
-        return int(option_str), int(min_len_str) # Window based with window-size
-    else:
-        return int(option), None # Delimiter based
+    option_str, min_len_str = option.split(',')
+    return int(option_str), int(min_len_str) # Window based with window-size
 
 # Window Tokenisation
 def window_tokenisation(plaintext, window_size):
-    tokens = []
+    global counts
     salts=[] # Store salts based on the counter approach
-    counts={} # counter
+    tokens = []
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
     for i in range(length):
@@ -86,19 +84,19 @@ def window_tokenisation_partial(plaintext, window_size):
     return tokens
 
 # Delimiter Tokenisation
-def delimiter_tokenisation(plaintext):
+def delimiter_tokenisation(plaintext,window_size):
+    global counts
     delimiters = ['=', ';', ':', ',', ' '] # Can be changed:..
     salts=[] # Store salts based on the counter approach
-    counts={} # counter
     pattern = '|'.join(map(re.escape, delimiters))
     raw_tokens = re.split(pattern, plaintext)
     tokens=[]
     for token in raw_tokens:
         if not token:
             continue
-        if len(token) > 8:
+        if len(token) > window_size:
             # Replace long token with 8-byte windows
-            broken_tokens = window_tokenisation_partial(token, 8)
+            broken_tokens = window_tokenisation_partial(token, window_size)
             for t in broken_tokens:
                 counts[t] = counts.get(t, 0) + 1
                 tokens.append(t)
@@ -467,7 +465,7 @@ def main():
             tokens,salts = window_tokenisation(msg,min_length)
         elif option == 2:
             print("[Client] Delimiter-based tokenisation selected")
-            tokens,salts = delimiter_tokenisation(msg)
+            tokens,salts = delimiter_tokenisation(msg,min_length)
 
         print("[Client] Tokens:",tokens)
         pre_encrypted_tokens = []
@@ -498,10 +496,7 @@ def main():
         enc_msg = encrypt_message(k_ssl, msg)
         token_data = b''.join(len(t).to_bytes(2, 'big') + t for t in encrypted_tokens) # Join tokens along with their length
 
-        if option==1:
-            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ (min_length).to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
-        else:
-            payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+len(token_data).to_bytes(4, 'big')+token_data
+        payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ (min_length).to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
 
         print('')
         print("[Client] PAYLOAD:",payload)
