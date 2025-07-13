@@ -287,11 +287,11 @@ def sample_evaluate_circuit(package):
     client_wires = package['client_inputs']
     client_indices = package['client_input_wires']
 
-    for idx, (label, sel_bit) in zip(middlebox_indices, middlebox_wires): # Stores the middlebox wire labels
-        wire_values[idx] = (label, sel_bit)
+    for idx, (label) in zip(middlebox_indices, middlebox_wires): # Stores the middlebox wire labels
+        wire_values[idx] = (label)
 
-    for idx, (label, sel_bit) in zip(client_indices, client_wires): # Stores the client wire labels
-        wire_values[idx] = (label, sel_bit)
+    for idx, (label) in zip(client_indices, client_wires): # Stores the client wire labels
+        wire_values[idx] = (label)
     
     and_index = 0 # Evaluation for only gates using the encrypted tables
     for gate in package['gates']: 
@@ -299,8 +299,13 @@ def sample_evaluate_circuit(package):
             gate['table'] = package['garbled_tables'][and_index]['table']
             and_index += 1
 
+    counter=0
     for gate in package['gates']:
-        evaluate_gate(gate, wire_values)
+        if(gate['type']=='AND'):
+            evaluate_gate(gate, wire_values,package['g_P'],counter)
+            counter=counter+2
+        else:
+            evaluate_gate(gate, wire_values,package['g_P'],counter)
 
     return wire_values
 
@@ -325,34 +330,55 @@ def prepare(ruleset,tokenisation_type,window_length):
     return prepared_rules
 
 #####################################################################################################
+# Hash function for Half-gates optimisation:
+def H(counter: int, label: bytes) -> bytes:
+    counter_bytes = counter.to_bytes(4, byteorder='big')
+    data = counter_bytes + label
+    # Apply SHA256 hash
+    return hashlib.sha256(data).digest()
+
+# Helper functions
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    return bytes(x ^ y for x, y in zip(a, b))
+
+def mul_bit_bytes(bit: int, b: bytes) -> bytes:
+    return b if bit else bytes(len(b))
+
 # Evaluation of Yao garbled circuit:
-def evaluate_gate(gate, wire_values):
+def evaluate_gate(gate, wire_values, g_P, counter):
+    out_wire = gate['out'][0]  # extract once
+
     if gate['type'] == 'AND':
         A, B = gate['in']
-        a_label, a_sel = wire_values[A]
-        b_label, b_sel = wire_values[B]
+        T_G, T_E = gate['table']
+        a_label = wire_values[A]
+        b_label = wire_values[B]
 
-        index = (a_sel << 1) | b_sel
-        encrypted, out_sel = gate['table'][index]
+        s_a = a_label[-1] & 1
+        s_b = b_label[-1] & 1
 
-        h = hashlib.sha256(a_label + b_label).digest()[:WIRE_LABEL_SIZE]
-        out_label = bytes(x ^ y for x, y in zip(encrypted, h))
-        wire_values[gate['out'][0]] = (out_label, out_sel)
+        H_a = H(counter, a_label)
+        X_G = xor_bytes(H_a, mul_bit_bytes(s_a, T_G))
+
+        H_b = H(counter + 1, b_label)
+        temp = xor_bytes(T_E, a_label)
+        X_E = xor_bytes(H_b, mul_bit_bytes(s_b, temp))
+
+        out_label = xor_bytes(X_G, X_E)
+        wire_values[out_wire] = out_label
 
     elif gate['type'] == 'XOR':
         A, B = gate['in']
-        C = gate['out'][0]
-        a_label, a_sel = wire_values[A]
-        b_label, b_sel = wire_values[B]
-        label = bytes(x ^ y for x, y in zip(a_label, b_label))
-        sel = a_sel ^ b_sel
-        wire_values[C] = (label, sel)
+        a_label = wire_values[A]
+        b_label = wire_values[B]
+        label = xor_bytes(a_label, b_label)
+        wire_values[out_wire] = label
 
     elif gate['type'] == 'INV':
         A = gate['in'][0]
-        C = gate['out'][0]
-        a_label, a_sel = wire_values[A]
-        wire_values[C] = (a_label, a_sel^1)
+        a_label = wire_values[A]
+        label = xor_bytes(a_label, g_P)
+        wire_values[out_wire] = label
 
     else:
         raise NotImplementedError(f"Unsupported gate type: {gate['type']}")
@@ -361,19 +387,13 @@ def evaluate_gate(gate, wire_values):
 # Decoding outputs labels using output map:
 def decode_outputs(wire_values, output_map):
     results = []
-    for idx, mapping in output_map.items():
-        if idx not in wire_values:
-            results.append(None)
-            continue
-        
-        value = wire_values[idx]  
-        
-        if value == mapping['0']:
+    for idx, bit in output_map.items():  #
+        label = wire_values[idx]
+        lsb = label[-1] & 1  # Extract LSB of last byte of actual label
+        if lsb == bit:
             results.append(0)
-        elif value == mapping['1']:
-            results.append(1)
         else:
-            results.append(None)
+            results.append(1)
     return results
 
 #####################################################################################################
@@ -394,15 +414,19 @@ def evaluate_circuit(package,labels):
     for i in range(0,len(labels)):
         pre_label=labels[i]
         wire_values = {}
-        for idx, (label,sel_bit) in zip(middlebox_indices, pre_label):
-            wire_values[idx] = (label, sel_bit)
+        for idx, (label) in zip(middlebox_indices, pre_label):
+            wire_values[idx] = (label)
 
-        for idx, (label, sel_bit) in zip(client_indices, client_wires):
-            wire_values[idx] = (label, sel_bit)
+        for idx, (label) in zip(client_indices, client_wires):
+            wire_values[idx] = (label)
 
+        counter=0
         for gate in package['gates']:
-            evaluate_gate(gate, wire_values)
-        
+            if(gate['type']=='AND'): 
+                evaluate_gate(gate, wire_values,package['g_P'],counter)
+                counter=counter+2
+            else:
+                evaluate_gate(gate, wire_values,package['g_P'],counter)
         final_wires_list.append(wire_values)
 
     return final_wires_list
@@ -437,7 +461,7 @@ def receive_labels_client(plaintext_rules, s):
             assert len(block) == 16
             conn.sendall(block)
 
-        expected_total = num_blocks * 128 * 17
+        expected_total = num_blocks * 128 * 16
         labels_raw = b''
         while len(labels_raw) < expected_total:
             chunk = conn.recv(expected_total - len(labels_raw))
@@ -450,10 +474,10 @@ def receive_labels_client(plaintext_rules, s):
 
         all_input_labels = []
         for i in range(num_blocks):
-            block_raw = labels_raw[i*128*17 : (i+1)*128*17]
+            block_raw = labels_raw[i*128*16 : (i+1)*128*16]
             input_labels = [
-                (block_raw[j:j+16], block_raw[j+16])
-                for j in range(0, 128*17, 17)
+                (block_raw[j:j+16])
+                for j in range(0, 128*16, 16)
             ]
             all_input_labels.append(input_labels)
 
@@ -499,7 +523,7 @@ def receive_labels_server(plaintext_rules):
                 conn.sendall(block)
 
             # Step 5: Receive all labels in one go
-            expected_total = num_blocks * 128 * 17
+            expected_total = num_blocks * 128 * 16
             labels_raw = b''
             while len(labels_raw) < expected_total:
                 chunk = conn.recv(expected_total - len(labels_raw))
@@ -513,10 +537,10 @@ def receive_labels_server(plaintext_rules):
             # Step 6: Parse all labels
             all_input_labels = []
             for i in range(num_blocks):
-                block_raw = labels_raw[i * 128 * 17 : (i + 1) * 128 * 17]
+                block_raw = labels_raw[i * 128 * 16 : (i + 1) * 128 * 16]
                 input_labels = [
-                    (block_raw[j:j + 16], block_raw[j + 16])
-                    for j in range(0, 128 * 17, 17)
+                    (block_raw[j:j + 16])
+                    for j in range(0, 128 * 16, 16)
                 ]
                 all_input_labels.append(input_labels)
 

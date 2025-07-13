@@ -3,16 +3,17 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
+from pqcrypto.kem.mceliece8192128 import generate_keypair, encrypt, decrypt
 from collections import defaultdict 
 import hmac
 import socket
 import pickle
 import socket
-import random
 import hashlib
 import os
 import re
 import sys
+import time
 
 #####################################################################################################
 # GLOBAL PARAMS:
@@ -24,25 +25,24 @@ WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
 counts={} # counter
 
 #####################################################################################################
-# Diffie Helman Key Exchange and exchange salt
-def perform_dh_key_exchange():
-    # Diffie-Hellman parameters
-    p = 23
-    g = 5
-    client_private = random.randint(1, p - 2) # private key
-    client_public = pow(g, client_private, p) # public key
-
+#Key Exchange and exchange salt
+def perform_key_exchange():
+    pk, sk = generate_keypair() 
     # Initiate connection with server
     s = socket.socket()
     s.connect(('server', 5002))
-    s.send(str(client_public).encode())
-    server_public = int(s.recv(1024).decode()) # Server's public key
+    s.sendall(len(pk).to_bytes(4, 'big')+pk)
+    ct_len_bytes = s.recv(4)
+    ct_len = int.from_bytes(ct_len_bytes, 'big')
+    ct = b'' # Server public key
+    while len(ct) < ct_len:
+        ct += s.recv(ct_len - len(ct))
     s.send(salt) # Send the salt
     # Derive keys
-    shared_secret = pow(server_public, client_private, p)  # Shared secret using DH
-    print("[Client] Shared secret with server:", shared_secret)
+    shared_secret = decrypt(sk, ct)  # Shared secret using DH
+    print("[Client] Shared secret with server:", shared_secret.hex())
     s.close()
-    key = hashlib.sha512(str(shared_secret).encode()).digest()
+    key = hashlib.sha512(shared_secret).digest()
     return key[:32], key[32:48], key[48:64]  # SSL, ENC, RAND
 
 #####################################################################################################
@@ -177,38 +177,69 @@ def generate_wire_labels(num_wires, delta, k_rand):
     for i in range(num_wires):
         label_material = prf(k_rand, f'label-{i}')
         base_label = label_material[:16]
-        sel_bit = label_material[0] & 1 # select bit
-        label_0 = base_label if sel_bit == 0 else bytes(a ^ b for a, b in zip(base_label, delta)) # Label for 0 bit
+        label_0 = base_label
         label_1 = bytes(a ^ b for a, b in zip(label_0, delta)) # Label for 1 bit
-        wire_labels[i] = ((label_0, 0 if sel_bit == 0 else 1), (label_1, 1 if sel_bit == 0 else 0))
+        wire_labels[i] = (label_0, label_1)
     return wire_labels
 
-# Function for generating labels for inputs in garbler side
+# Function for generating labels for inputs in garbler side:
 def encode_inputs(bits, wire_labels, offset):
     return [wire_labels[offset + i][bit] for i, bit in enumerate(bits)]
 
-# Garbling of AND gate
-def garble_and_gate(A, B, C, wire_labels):
-    table = [None] * 4
-    for a in (0, 1):
-        for b in (0, 1):
-            inA, selA = wire_labels[A][a]
-            inB, selB = wire_labels[B][b]
-            out_label, out_sel = wire_labels[C][a & b]
-            index = (selA << 1) | selB
-            h = hashlib.sha256(inA + inB).digest()[:WIRE_LABEL_SIZE]
-            encrypted = bytes(x ^ y for x, y in zip(out_label, h))
-            table[index] = (encrypted, out_sel)
+# Hash function for Half-gates optimisation:
+def H(counter: int, label: bytes) -> bytes:
+    counter_bytes = counter.to_bytes(4, byteorder='big')
+    data = counter_bytes + label
+    # Apply SHA256 hash
+    return hashlib.sha256(data).digest()
+
+# Helper functions
+def xor_bytes(a: bytes, b: bytes) -> bytes:
+    return bytes(x ^ y for x, y in zip(a, b))
+
+def mul_bit_bytes(bit: int, b: bytes) -> bytes:
+    return b if bit else bytes(len(b))
+
+# Garbling of AND gate using Half-Gate optimisation
+def garble_and_gate(A, B, C, wire_labels,counter,delta):
+    X_a0 = wire_labels[A][0]
+    X_a1 = wire_labels[A][1]
+    X_b0 = wire_labels[B][0]
+    X_b1 = wire_labels[B][1]
+
+    p_a = X_a0[-1] & 1
+    p_b = X_b0[-1] & 1
+
+    # First half-gate
+    Ha0 = H(counter, X_a0)
+    Ha1 = H(counter, X_a1)
+    T_G  = xor_bytes(xor_bytes(Ha0, Ha1), mul_bit_bytes(p_b, delta))
+    X_G  = xor_bytes(Ha0, mul_bit_bytes(p_a, T_G))
+
+    # Second half-gate
+    Hb0 = H(counter + 1, X_b0)
+    Hb1 = H(counter + 1, X_b1)
+    T_E  = xor_bytes(xor_bytes(Hb0, Hb1), X_a0)
+    temp = xor_bytes(T_E, X_a0)
+    X_E  = xor_bytes(Hb0, mul_bit_bytes(p_b, temp))
+
+    # Output labels
+    X_c0 = xor_bytes(X_G, X_E)
+    X_c1 = xor_bytes(X_c0, delta)
+
+    wire_labels[C] = (X_c0, X_c1)
+
     return {
         "type": "AND",
         "in": (A, B),
         "out": C,
-        "table": table
+        "table": [T_G, T_E]
     }
 
 # Garble the circuit using Free XOR and basic AND gate garbling
-def garble_circuit(circuit, wire_labels, delta):
+def garble_circuit(circuit, wire_labels, delta, g_P):
     garbled_tables = []
+    counter=0
     for gate in circuit["gates"]:
         gtype = gate["type"]
         in_wires = gate["in"]
@@ -217,23 +248,24 @@ def garble_circuit(circuit, wire_labels, delta):
         if gtype == "XOR": # Simple free XOR
             A, B = in_wires
             C = out_wires[0]
-            (a0, sa0), _ = wire_labels[A]
-            (b0, sb0), _ = wire_labels[B]
+            (a0), _ = wire_labels[A]
+            (b0), _ = wire_labels[B]
             c0 = bytes(x ^ y for x, y in zip(a0, b0))
             c1 = bytes(x ^ y for x, y in zip(c0, delta))
-            wire_labels[C] = ((c0, sa0 ^ sb0), (c1, 1 ^ (sa0 ^ sb0)))
+            wire_labels[C] = ((c0), (c1))
 
         elif gtype == "INV":
             A = in_wires[0]
-            (a0,sa0)=wire_labels[A][0]
-            (a1,sa1)=wire_labels[A][1]
+            (a0)=wire_labels[A][0]
             C = out_wires[0]
-            wire_labels[C] = ((a1,sa0), (a0,sa1))
+            c0=bytes(x ^ y for x, y in zip(a0, g_P))
+            wire_labels[C] = ((bytes(x ^ y for x, y in zip(c0, delta))),(c0))
 
         elif gtype == "AND": # Can be optimised using garbled gate reduction(GRR)
             A, B = in_wires
             C = out_wires[0]
-            garbled_tables.append(garble_and_gate(A, B, C, wire_labels))
+            garbled_tables.append(garble_and_gate(A, B, C, wire_labels,counter,delta))
+            counter=counter+2
 
         else:
             raise NotImplementedError("[Client] ",f"Gate {gtype} not supported.")
@@ -242,7 +274,7 @@ def garble_circuit(circuit, wire_labels, delta):
 ######################################################################################################
 # SAMPLE:
 # Package to be sent ot middlebox
-def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits, garbled_tables, k_bits):
+def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits, garbled_tables, k_bits,g_P):
     inputs_offset = circuit["inputs_garbler"]
 
     middlebox_input_labels = encode_inputs(middlebox_input_bits, wire_labels, inputs_offset)
@@ -255,13 +287,12 @@ def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits,
     # Output wire indices
     # We have to gove this so that Middlebox can map his outputs
     output_map = {
-        idx: {
-            "0": wire_labels[idx][0],
-            "1": wire_labels[idx][1]
-        } for idx in output_indices
+    idx: wire_labels[idx][0][-1] & 1  # LSB of last byte of label for bit 0
+    for idx in output_indices
     }
 
     return {
+        "g_P":g_P,
         "middlebox_inputs": middlebox_input_labels,
         "middlebox_input_wires": middlebox_input_indices,
         "garbled_tables": garbled_tables,
@@ -307,7 +338,7 @@ def evaluate_circuit(circuit, input_bits):
 
 ######################################################################################################
 # Package to be sent ot middlebox
-def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits):
+def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits,g_P):
     inputs_offset = circuit["inputs_garbler"]
 
     middlebox_input_indices = list(range(inputs_offset, inputs_offset + 128))
@@ -317,11 +348,10 @@ def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits):
     client_input_labels = encode_inputs(k_bits, wire_labels, 0)  # <- Garbled input: evaluator doesn't know the bit
     # Output wire indices
     output_map = {
-        idx: {
-            "0": wire_labels[idx][0],
-            "1": wire_labels[idx][1]
-        } for idx in output_indices
+    idx: wire_labels[idx][0][-1] & 1  # LSB of last byte of label for bit 0
+    for idx in output_indices
     }
+
     return {
         "garbled_tables": garbled_tables,
         "middlebox_input_wires": middlebox_input_indices,
@@ -330,6 +360,7 @@ def prepare_evaluator_package(circuit, wire_labels, garbled_tables, k_bits):
         "client_input_wires": client_input_indices,
         "output_wires": output_indices,
         "gates": circuit["gates"],
+        "g_P": g_P
     }
 
 ######################################################################################################
@@ -368,10 +399,10 @@ def send_garbled_output(evaluator_package, wire_labels, offset):
             assert len(bits) == 128
 
             for j, bit in enumerate(bits):
-                label, sel_bit = wire_labels[offset + j][bit]
-                payload += label + bytes([sel_bit])  # 17 bytes per input bit
+                label = wire_labels[offset + j][bit]
+                payload += label 
 
-        assert len(payload) == num_blocks * 128 * 17
+        assert len(payload) == num_blocks * 128 * 16
         s.sendall(payload)
     except Exception as e:
         print(f"[!] Error in send_garbled_output: {e}")
@@ -408,8 +439,15 @@ def bits_to_hex(bits):
 def main():
 
 #####################################################################################################
-    k_ssl, k, k_rand = perform_dh_key_exchange()
+    start=time.time()
+    k_ssl, k, k_rand = perform_key_exchange()
+    end=time.time()
+    print("Time taken for key exchange = ",end-start)
+
+    start=time.time()
     option, min_length = tokenisation_selection()
+    end=time.time()
+    print("Time taken for tokenisation details and salt exchange = ",end-start)
 #####################################################################################################
 
     circuit_path = "aes_128.bristol" 
@@ -420,7 +458,6 @@ def main():
     # Sample check, for is the circuit working correctly #############################################
     sample_key_hex = '2b7e151628aed2a6abf7158809cf4f3c'
     sample_pt_hex  = 'ae2d8a571e03ac9c9eb76fac45af8e51'
-    sample_expected_ct_hex = 'f5d3d58503b9699de785895a96fdbaaf'
 
     sample_key_bits = hex_to_bits(sample_key_hex)
     sample_pt_bits = hex_to_bits(sample_pt_hex)
@@ -430,22 +467,27 @@ def main():
     sample_output_hex = bits_to_hex(sample_out_bits)
 
     print("[Client] Circuit Output:  ", sample_output_hex)
-    print("[Client] Expected Output: ", sample_expected_ct_hex)
-    print("[Client] Match:           ", sample_output_hex == sample_expected_ct_hex)
 
     sample_delta = generate_delta(k_rand)
+    sample_X= generate_delta(k_rand) # will be used for INV gates
+    sample_g_P=bytes(x ^ y for x, y in zip(sample_X, sample_delta))
     sample_wire_labels = generate_wire_labels(circuit["num_wires"], sample_delta,k_rand)
-    sample_garbled_tables = garble_circuit(circuit, sample_wire_labels, sample_delta)
-    sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits)
+    start=time.time()
+    sample_garbled_tables = garble_circuit(circuit, sample_wire_labels, sample_delta,sample_g_P)
+    end=time.time()
+    print("Time taken for garbling =",end-start)
+    sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits,sample_g_P)
     send_sample_garbled_output(sample_evaluator_package)
 
 ######################################################################################################
 
     k_bits = bytes_to_bits(k) 
     delta = generate_delta(k_rand)   # will be generate based on k_rand
+    X= generate_delta(k_rand) # will be used for INV gates
+    g_P=bytes(x ^ y for x, y in zip(X, delta))
     wire_labels = generate_wire_labels(circuit["num_wires"], delta, k_rand)
-    garbled_tables = garble_circuit(circuit, wire_labels, delta)
-    evaluator_package = prepare_evaluator_package(circuit, wire_labels, garbled_tables,k_bits)
+    garbled_tables = garble_circuit(circuit, wire_labels, delta,g_P)
+    evaluator_package = prepare_evaluator_package(circuit, wire_labels, garbled_tables,k_bits,g_P)
 
     # Need to use OT
     send_garbled_output(evaluator_package,wire_labels,circuit['inputs_garbler'])

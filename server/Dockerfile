@@ -3,6 +3,7 @@ FROM python:3.11-slim
 # Install dependencies
 RUN pip install cryptography
 RUN pip install pyzmq pycryptodome bitarray
+RUN pip install pqcrypto
 WORKDIR /app
 
 COPY . .
