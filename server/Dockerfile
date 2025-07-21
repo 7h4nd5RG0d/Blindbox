@@ -4,6 +4,8 @@ FROM python:3.11-slim
 RUN pip install cryptography
 RUN pip install pyzmq pycryptodome bitarray
 RUN pip install pqcrypto
+RUN pip install tinyec
+
 WORKDIR /app
 
 COPY . .

@@ -4,6 +4,7 @@ FROM python:3.11-slim
 RUN pip install cryptography
 RUN apt update && apt install -y tcpdump
 RUN pip install pyzmq pycryptodome bitarray numpy rsa
+RUN pip install tinyec
 # Install dependencies including git
 RUN apt-get update && apt-get install -y git 
 WORKDIR /app

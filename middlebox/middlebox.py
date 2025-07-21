@@ -2,25 +2,31 @@
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
+from tinyec import registry,ec
+from tinyec.ec import Point
 import socket
 import pickle
-import socket
 import random
 import hashlib
 import os
 import re
 import sys
+import secrets
 
 #####################################################################################################
 # GLOBAL PARAMS:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Ruleset
-ruleset = ['hack', 'malware', 'attack', 'exploit']
+ruleset = ['hack']
 min_length = min(len(word) for word in ruleset)
 window_length=min(min_length,8) # Window length for tokenisation
 RS=2**64
 salt_0=0 # Initial salt
 WIRE_LABEL_SIZE=16
+# Using a standard curve for OT
+curve = registry.get_curve('secp256r1')  # prime-order group
+G = curve.g  # Generator point
+p = curve.field.p  # Prime field order
 
 #####################################################################################################
 # AVL Tree class and functions:
@@ -432,6 +438,48 @@ def evaluate_circuit(package,labels):
     return final_wires_list
 
 #####################################################################################################
+def bytes_to_point(b):
+    x = int.from_bytes(b[:32], 'big')
+    y = int.from_bytes(b[32:], 'big')
+    return ec.Point(curve,x, y)
+
+def point_to_bytes(P):
+    return int.to_bytes(P.x, 32, 'big') + int.to_bytes(P.y, 32, 'big')
+
+def Hash(S: Point, R: Point, P: Point) -> bytes:
+    data = (
+        S.x.to_bytes(32, 'big') + S.y.to_bytes(32, 'big') +
+        R.x.to_bytes(32, 'big') + R.y.to_bytes(32, 'big') +
+        P.x.to_bytes(32, 'big') + P.y.to_bytes(32, 'big')
+    )
+    return hashlib.sha256(data).digest()
+
+def handle_ot(conn,plaintext_rules):
+    full_labels=[]
+    s_x=conn.recv(64)
+    S=bytes_to_point(s_x)
+    for i in range(len(plaintext_rules)):
+        rule=bytes_to_bits(plaintext_rules[i])
+        labels=[]
+        for j in range(len(rule)):
+            x = secrets.randbelow(curve.field.n - 1) + 1
+            if rule[j]==0:
+                R=x*G
+            else:
+                R=S+x*G
+            conn.send(point_to_bytes(R))
+            ci_0=conn.recv(16)
+            ci_1=conn.recv(16)
+
+            k_i=Hash(S,R,x*S)
+            if rule[j]==0:
+                label=xor_bytes(k_i,ci_0)
+            else:
+                label=xor_bytes(k_i,ci_1)
+            labels.append(label)
+        full_labels.append(labels)
+    return full_labels
+
 # Recieve the labels corresponding to the plaintext ruleset for yao garbled circuits 
 def receive_labels_client(plaintext_rules, s):
     conn, addr = s.accept()
@@ -456,32 +504,9 @@ def receive_labels_client(plaintext_rules, s):
 
         num_blocks = len(plaintext_rules)
         conn.sendall(num_blocks.to_bytes(4, 'big'))
-
-        for block in plaintext_rules:
-            assert len(block) == 16
-            conn.sendall(block)
-
-        expected_total = num_blocks * 128 * 16
-        labels_raw = b''
-        while len(labels_raw) < expected_total:
-            chunk = conn.recv(expected_total - len(labels_raw))
-            if not chunk:
-                raise RuntimeError("[Middlebox] Connection closed while receiving labels")
-            labels_raw += chunk
-
-        if len(labels_raw) != expected_total:
-            raise RuntimeError("[Middlebox] Did not receive full label+selbit data")
-
-        all_input_labels = []
-        for i in range(num_blocks):
-            block_raw = labels_raw[i*128*16 : (i+1)*128*16]
-            input_labels = [
-                (block_raw[j:j+16])
-                for j in range(0, 128*16, 16)
-            ]
-            all_input_labels.append(input_labels)
-
-        return evaluator_package, all_input_labels
+        
+        input_labels=handle_ot(conn,plaintext_rules)
+        return evaluator_package, input_labels
 
     except Exception as e:
         print("[Middlebox] ",f"[!] Error: {e}")
@@ -517,34 +542,8 @@ def receive_labels_server(plaintext_rules):
             num_blocks = len(plaintext_rules)
             conn.sendall(num_blocks.to_bytes(4, 'big'))
 
-            # Step 4: Send all 16-byte plaintext blocks
-            for block in plaintext_rules:
-                assert len(block) == 16
-                conn.sendall(block)
-
-            # Step 5: Receive all labels in one go
-            expected_total = num_blocks * 128 * 16
-            labels_raw = b''
-            while len(labels_raw) < expected_total:
-                chunk = conn.recv(expected_total - len(labels_raw))
-                if not chunk:
-                    raise RuntimeError("[Middlebox] Connection closed while receiving labels")
-                labels_raw += chunk
-
-            if len(labels_raw) != expected_total:
-                raise RuntimeError("[Middlebox] Did not receive full label+selbit data")
-
-            # Step 6: Parse all labels
-            all_input_labels = []
-            for i in range(num_blocks):
-                block_raw = labels_raw[i * 128 * 16 : (i + 1) * 128 * 16]
-                input_labels = [
-                    (block_raw[j:j + 16])
-                    for j in range(0, 128 * 16, 16)
-                ]
-                all_input_labels.append(input_labels)
-
-            return evaluator_package, all_input_labels
+            input_labels=handle_ot(conn,plaintext_rules)
+            return evaluator_package, input_labels
 
     except Exception as e:
         print("[Middlebox] ", f"[!] Error: {e}")
@@ -653,8 +652,9 @@ def main():
 #####################################################################################################
     print("[Middlebox] Evaluating the circuit ...")
     package_client,labels_client=receive_labels_client(prepared_ruleset,mb)
+    print("[Middlebox] Recieved labels from client")
     package_server,labels_server=receive_labels_server(prepared_ruleset)
-
+    print("[Middlebox] Recieved labels from server")
     if  (labels_server!=labels_client) or (package_client!=package_server): # Checks if garbled circuit/tables and labels are same.....
         warning="Hacking attempt detected at [Middlebox]"
         print("[Middlebox] Hacking attempt detected here...")

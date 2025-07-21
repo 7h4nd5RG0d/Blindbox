@@ -5,10 +5,12 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 from pqcrypto.kem.mceliece8192128 import generate_keypair, encrypt, decrypt
 from collections import defaultdict 
+from tinyec.ec import Point
+from tinyec import registry,ec
 import hmac
 import socket
 import pickle
-import socket
+import secrets
 import hashlib
 import os
 import re
@@ -23,6 +25,10 @@ salt=os.urandom(8)
 salt_int = int.from_bytes(salt, byteorder='big') # Initial salt, changes in every connection
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
 counts={} # counter
+# Using a standard curve for OT
+curve = registry.get_curve('secp256r1')  # prime-order group
+G = curve.g  # Generator point
+p = curve.field.p  # Prime field order
 
 #####################################################################################################
 #Key Exchange and exchange salt
@@ -115,6 +121,40 @@ def encrypt_message(k_ssl, plaintext):
     nonce = os.urandom(12)
     ciphertext = aesgcm.encrypt(nonce, plaintext.encode(), None)
     return nonce + ciphertext # Encryption of plaintext message
+
+#####################################################################################################
+def point_to_bytes(P):
+    return int.to_bytes(P.x, 32, 'big') + int.to_bytes(P.y, 32, 'big')
+
+def bytes_to_point(b):
+    x = int.from_bytes(b[:32], 'big')
+    y = int.from_bytes(b[32:], 'big')
+    return ec.Point(curve,x, y)
+
+def Hash(S: Point, R: Point, P: Point) -> bytes:
+    data = (
+        S.x.to_bytes(32, 'big') + S.y.to_bytes(32, 'big') +
+        R.x.to_bytes(32, 'big') + R.y.to_bytes(32, 'big') +
+        P.x.to_bytes(32, 'big') + P.y.to_bytes(32, 'big')
+    )
+    return hashlib.sha256(data).digest()
+
+# Oblivious Transfer:
+def handle_oblivious_transfer(conn,num,wire_label,offset):
+    y = secrets.randbelow(curve.field.n - 1) + 1 # y ← F_p
+    S = y * G
+    T = y * S
+
+    conn.send(point_to_bytes(S))
+    for i in range(num):
+        for j in range(128):
+            R_i_j=bytes_to_point(conn.recv(64))
+            k_i0_j = Hash(S, R_i_j, y * R_i_j)
+            k_i1_j = Hash(S, R_i_j, (y * R_i_j) - T)
+            ci_0=xor_bytes(k_i0_j,wire_label[offset+j][0])
+            ci_1=xor_bytes(k_i1_j,wire_label[offset+j][1])
+            conn.send(ci_0)
+            conn.send(ci_1)
 
 #####################################################################################################
 # Parse Bristol circuit file
@@ -380,30 +420,8 @@ def send_garbled_output(evaluator_package, wire_labels, offset):
             raise RuntimeError("[Client] Failed to receive number of plaintext blocks")
         num_blocks = int.from_bytes(num_blocks_bytes, 'big')
 
-        # Receive all plaintext blocks
-        total_plaintext_len = num_blocks * 16
-        received = b''
-        while len(received) < total_plaintext_len:
-            chunk = s.recv(total_plaintext_len - len(received))
-            if not chunk:
-                raise RuntimeError("[Client] Connection closed while receiving plaintext blocks")
-            received += chunk
-
-        # Prepare and send all labels
-        payload = b''
-        for i in range(num_blocks):
-            block = received[i*16:(i+1)*16]
-            bits = []
-            for byte in block:
-                bits.extend([(byte >> j) & 1 for j in reversed(range(8))])
-            assert len(bits) == 128
-
-            for j, bit in enumerate(bits):
-                label = wire_labels[offset + j][bit]
-                payload += label 
-
-        assert len(payload) == num_blocks * 128 * 16
-        s.sendall(payload)
+        handle_oblivious_transfer(s,num_blocks,wire_labels,offset)
+        
     except Exception as e:
         print(f"[!] Error in send_garbled_output: {e}")
     finally:
