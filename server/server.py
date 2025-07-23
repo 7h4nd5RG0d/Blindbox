@@ -357,7 +357,6 @@ def handle_middlebox_messages(server_socket,circuit):
 
             if tokenisation_type==1: # For checking if tokens are correctly created in client side
                 server_tokens,salts=window_tokenisation(dec_data.decode(),token_length)
-                print("CHECK",salts)
             else:
                 server_tokens,salts=delimiter_tokenisation(dec_data.decode(),token_length)
             
@@ -369,7 +368,6 @@ def handle_middlebox_messages(server_socket,circuit):
                 padded_bits=bytes_to_bits(padded)
                 out_bits=evaluate_circuit(circuit,k_bits+padded_bits)
                 server_pre_enc_tokens.append(bits_to_bytes(out_bits))
-            
             idx=0
             for token in server_pre_enc_tokens:
                 cipher = Cipher(algorithms.AES(token), modes.ECB(), backend=default_backend())
@@ -382,7 +380,7 @@ def handle_middlebox_messages(server_socket,circuit):
                 ct_int=ct_int%RS
                 ct_bytes = ct_int.to_bytes(8, byteorder='big')
                 server_enc_tokens.append(ct_bytes)
-
+                idx=idx+1
             print("[Server] Received:", dec_data.decode())
             if encrypted_tokens==server_enc_tokens:
                 conn.send(dec_data) 

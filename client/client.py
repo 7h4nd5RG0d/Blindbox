@@ -539,7 +539,6 @@ def main():
             padded_bits=bytes_to_bits(padded)
             out_bits=evaluate_circuit(circuit,k_bits+padded_bits)
             pre_encrypted_tokens.append(bits_to_bytes(out_bits))
-
         idx=0
         for token in pre_encrypted_tokens:
             cipher = Cipher(algorithms.AES(token), modes.ECB(), backend=default_backend())

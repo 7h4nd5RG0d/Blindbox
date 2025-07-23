@@ -692,7 +692,6 @@ def main():
             for token in parsed_tokens:
                 root,present=AVL_search(root,token)
                 if present:
-                    print("CHECK1",sus_count)
                     sus_count+=1
                 found= found or present
 
