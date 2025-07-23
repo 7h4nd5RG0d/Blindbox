@@ -72,7 +72,8 @@ def window_tokenisation(plaintext, window_size):
     tokens = []
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
-    for i in range(length):
+    #if (length-windows)
+    for i in range(length-window_size+1):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
         tokens.append(token)
         counts[token]=counts.get(token,0)+1
@@ -523,6 +524,7 @@ def main():
         if option == 1:
             print("[Client] Window-based tokenisation selected with window-size=",min_length)
             tokens,salts = window_tokenisation(msg,min_length)
+            print(salts)
         elif option == 2:
             print("[Client] Delimiter-based tokenisation selected")
             tokens,salts = delimiter_tokenisation(msg,min_length)

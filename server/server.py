@@ -25,6 +25,7 @@ k_rand=0
 RS=2**64
 salt_int=0
 WIRE_LABEL_SIZE = 16  # 128-bit wire labels (AES block size)
+counts={} # Counter
 # Using a standard curve for OT
 curve = registry.get_curve('secp256r1')  # prime-order group
 G = curve.g  # Generator point
@@ -337,6 +338,14 @@ def handle_middlebox_messages(server_socket,circuit):
         try:
             conn, addr = server_socket.accept()
             print("[Server] Message from", addr)
+            check_validity = int.from_bytes(receive_full(conn, 1), byteorder='big')
+            if check_validity==2:
+                print("[Server] User is blacklisted, will take strict action....")
+                conn.close()
+                continue
+            if check_validity==0:
+                print("[Server] Keeping eye on the user, might be a malicious actor..")
+
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             dec_data=decrypt_message(k_ssl,encrypted_msg)
             encrypted_tokens=parse_token_data(token_stream)
@@ -348,6 +357,7 @@ def handle_middlebox_messages(server_socket,circuit):
 
             if tokenisation_type==1: # For checking if tokens are correctly created in client side
                 server_tokens,salts=window_tokenisation(dec_data.decode(),token_length)
+                print("CHECK",salts)
             else:
                 server_tokens,salts=delimiter_tokenisation(dec_data.decode(),token_length)
             
@@ -389,10 +399,11 @@ def handle_middlebox_messages(server_socket,circuit):
 def window_tokenisation(plaintext, window_size):
     tokens = []
     salts=[]
-    counts={}
+    global counts
+    print("[DEBUG] counts dict id:", id(counts))
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
-    for i in range(length):
+    for i in range(length-window_size+1):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
         tokens.append(token)
         counts[token]=counts.get(token,0)+1
@@ -413,7 +424,7 @@ def window_tokenisation_partial(plaintext, window_size):
 def delimiter_tokenisation(plaintext,window_size):
     delimiters = ['=', ';', ':', ',', ' ']
     salts=[]
-    counts={}
+    global counts
     pattern = '|'.join(map(re.escape, delimiters))
     raw_tokens = re.split(pattern, plaintext)
     tokens=[]

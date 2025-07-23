@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import secrets
+import copy
 
 #####################################################################################################
 # GLOBAL PARAMS:
@@ -221,7 +222,7 @@ def window_tokenisation(plaintext, window_size):
     counts={}
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
-    for i in range(length):
+    for i in range(length-window_size+1):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
         tokens.append(token)
         counts[token]=counts.get(token,0)+1
@@ -500,7 +501,7 @@ def receive_labels_client(plaintext_rules, s):
             received += chunk
 
         evaluator_package = pickle.loads(received)
-        print("[Middlebox] Received evaluator package.")
+        print("[Middlebox] Received evaluator package from client.")
 
         num_blocks = len(plaintext_rules)
         conn.sendall(num_blocks.to_bytes(4, 'big'))
@@ -536,7 +537,7 @@ def receive_labels_server(plaintext_rules):
                 received += chunk
 
             evaluator_package = pickle.loads(received)
-            print("[Middlebox] Received evaluator package.")
+            print("[Middlebox] Received evaluator package from server.")
 
             # Step 3: Send number of plaintext blocks
             num_blocks = len(plaintext_rules)
@@ -674,12 +675,10 @@ def main():
 # AVL Root for faster searching and updation
     root=AVL_creation(None,encrypted_ruleset)
     print("[Middlebox] AVL Tree created")
-    present_root=root
 #####################################################################################################
     while True:
         try:
             conn = None  
-            root=present_root
             # Connection with client
             conn, addr = mb.accept()
             found=False
@@ -689,23 +688,46 @@ def main():
             print("[Middlebox] Encrypted tokens:", token_stream.hex())
 
             parsed_tokens=parse_token_data(token_stream) # parse the token data
+            sus_count=0
             for token in parsed_tokens:
                 root,present=AVL_search(root,token)
+                if present:
+                    print("CHECK1",sus_count)
+                    sus_count+=1
                 found= found or present
 
-            if found:
-                warning="[Middlebox] packet dropped since suspicious"
-                conn.send(warning.encode())
-                continue
-            # Forward as-is to the server
+            sus_percentage=sus_count/len(parsed_tokens)
 
+            # Forward as-is to the server
             if token_length==window_length:
-                payload=len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
-                server_response = forward_to_server(payload)
-                conn.send(server_response)
+                if found:
+                    print("[Middlebox] packet has suspicious content, deciding how to proceed..")
+                    print("[Middlebox] malicious percentage is",sus_percentage)
+                    if(sus_percentage>=0.5):
+                        print("[Middlebox] very large probability of malicious content, warning server to take action against client")
+                        payload=(2).to_bytes(1,'big')
+                        server_response = forward_to_server(payload)
+                        warning="Hacking attempt detected at [Middlebox]"
+                        conn.send(warning.encode())
+                        conn.close()
+                        break
+                
+                    else:
+                        payload=(0).to_bytes(1,'big') +len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
+                        server_response = forward_to_server(payload)
+                        conn.send(server_response)
+                        continue
+                else:
+                    payload=(1).to_bytes(1,'big')+len(encrypted_msg).to_bytes(4, 'big')+encrypted_msg + tokenisation_type.to_bytes(1, 'big')+ token_length.to_bytes(4, 'big')+len(token_stream).to_bytes(4, 'big')+token_stream
+                    server_response = forward_to_server(payload)
+                    conn.send(server_response)
             else: # Check if tokenisation length is changed by client in order to avoid detection
                 warning="Hacking attempt detected at [Middlebox]"
+                payload=(2).to_bytes(1,'big')
+                server_response = forward_to_server(payload)
                 conn.send(warning.encode())
+                conn.close()
+                break
 
         except Exception as e:
             print("[Middlebox] Error:", str(e))
