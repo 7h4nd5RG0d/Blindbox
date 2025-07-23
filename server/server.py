@@ -413,6 +413,9 @@ def window_tokenisation_partial(plaintext, window_size):
     tokens = []
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
+    if length < window_size:
+        message_bytes += b'0' * (window_size - length)
+        length = window_size
     for i in range(length-window_size+1):
         token = message_bytes[i:i+window_size]
         tokens.append(token)
@@ -429,7 +432,7 @@ def delimiter_tokenisation(plaintext,window_size):
     for token in raw_tokens:
         if not token:
             continue
-        if len(token) > window_size:
+        if len(token) >= window_size:
             # Replace long token with 8-byte windows
             broken_tokens = window_tokenisation_partial(token, window_size)
             for t in broken_tokens:
@@ -438,6 +441,7 @@ def delimiter_tokenisation(plaintext,window_size):
                 salts.append(salt_int + counts[t])
         else:
             token_byte = token.encode()
+            token_byte += b'0' * (window_size - len(token_byte))
             counts[token_byte] = counts.get(token_byte, 0) + 1
             tokens.append(token_byte)
             salts.append(salt_int + counts[token_byte])

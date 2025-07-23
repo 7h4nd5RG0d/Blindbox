@@ -18,7 +18,7 @@ import copy
 # GLOBAL PARAMS:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Ruleset
-ruleset = ['hack']
+ruleset = ['hack','malware']
 min_length = min(len(word) for word in ruleset)
 window_length=min(min_length,8) # Window length for tokenisation
 RS=2**64
@@ -222,6 +222,9 @@ def window_tokenisation(plaintext, window_size):
     counts={}
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
+    if length < window_size:
+        message_bytes += b'0' * (window_size - length)
+        length = window_size
     for i in range(length-window_size+1):
         token = bytes([message_bytes[(i + j) % length] for j in range(window_size)])
         tokens.append(token)
@@ -250,7 +253,7 @@ def delimiter_tokenisation(plaintext,window_size):
     for token in raw_tokens:
         if not token:
             continue
-        if len(token) > window_size:
+        if len(token) >= window_size:
             # Replace long token with 8-byte windows
             broken_tokens = window_tokenisation_partial(token, window_size)
             for t in broken_tokens:
@@ -259,6 +262,7 @@ def delimiter_tokenisation(plaintext,window_size):
                 salts.append(salt_0 + counts[t])
         else:
             token_byte = token.encode()
+            token_byte += b'0' * (window_size - len(token_byte))
             counts[token_byte] = counts.get(token_byte, 0) + 1
             tokens.append(token_byte)
             salts.append(salt_0 + counts[token_byte])
