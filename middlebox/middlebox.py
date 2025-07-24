@@ -650,7 +650,10 @@ def main():
     sample_output_bits = decode_outputs(sample_wire_values, sample_package['output_map'])
     sample_output_bytes = bits_to_bytes(sample_output_bits)
     print("[Middlebox] 🟡 Sample Output (hex):", sample_output_bytes.hex())
-
+    
+    if(sample_output_bytes.hex() != sample_package['output']):
+        print("[Middlebox] ❌ Circuit Error..")
+        return
 #####################################################################################################
     prepared_ruleset=prepare(ruleset,tokenisation_type,window_length)
 

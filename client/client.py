@@ -320,7 +320,7 @@ def garble_circuit(circuit, wire_labels, delta, g_P):
 ######################################################################################################
 # SAMPLE:
 # Package to be sent ot middlebox
-def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits, garbled_tables, k_bits,g_P):
+def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits, garbled_tables, k_bits,g_P,output):
     inputs_offset = circuit["inputs_garbler"]
 
     middlebox_input_labels = encode_inputs(middlebox_input_bits, wire_labels, inputs_offset)
@@ -347,6 +347,7 @@ def prepare_sample_evaluator_package(circuit, wire_labels, middlebox_input_bits,
         "client_input_wires": client_input_indices,
         "output_wires": output_indices,
         "gates": circuit["gates"],
+        "output":output
     }
 
 ######################################################################################################
@@ -502,7 +503,7 @@ def main():
     sample_garbled_tables = garble_circuit(circuit, sample_wire_labels, sample_delta,sample_g_P)
     end=time.time()
     print("[Client] 🕒 Time taken for garbling =",end-start)
-    sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits,sample_g_P)
+    sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits,sample_g_P,sample_output_hex)
     send_sample_garbled_output(sample_evaluator_package)
 
 ######################################################################################################
