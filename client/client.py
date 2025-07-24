@@ -36,6 +36,7 @@ def perform_key_exchange():
     pk, sk = generate_keypair() 
     # Initiate connection with server
     s = socket.socket()
+    print("[Client] 🚀 Connected to server for key exchange")
     s.connect(('server', 5002))
     s.sendall(len(pk).to_bytes(4, 'big')+pk)
     ct_len_bytes = s.recv(4)
@@ -46,7 +47,7 @@ def perform_key_exchange():
     s.send(salt) # Send the salt
     # Derive keys
     shared_secret = decrypt(sk, ct)  # Shared secret using DH
-    print("[Client] Shared secret with server:", shared_secret.hex())
+    print("[Client] ✅ Shared secret with server:", shared_secret.hex())
     s.close()
     key = hashlib.sha512(shared_secret).digest()
     return key[:32], key[32:48], key[48:64]  # SSL, ENC, RAND
@@ -56,12 +57,13 @@ def perform_key_exchange():
 def tokenisation_selection():
     # Initiate connection with middlebox
     s = socket.socket()
+    print("[Client] 🚀 Connected to middlebox for tokenisation and salt exchange")
     s.connect(('middlebox', 5001))
     option = s.recv(1024).decode()
-    print("[Client] Salt:",salt_int)
+    print("[Client] 🟡 Salt:",salt_int)
     s.send(salt)
     s.close()
-    print("[Client] Salt and tokenisation details exchanged with middlebox")
+    print("[Client] ✅ Salt and tokenisation details exchanged with middlebox")
     option_str, min_len_str = option.split(',')
     return int(option_str), int(min_len_str) # Window based with window-size
 
@@ -172,7 +174,7 @@ def parse_bristol_circuit(filepath):
     if len(inputs_info) == 3:
         input1, input2, num_outputs = inputs_info # 2nd line stores the number of inputs of client, middlebox and number of outputs in bits
     else:
-        raise ValueError("[Client] Unexpected header in Bristol file: expected 3 values on line 2.")
+        raise ValueError("[Client] ❌ Unexpected header in Bristol file: expected 3 values on line 2.")
 
     gates = [] # Stores the gates
     input_counts = defaultdict(int)
@@ -204,7 +206,7 @@ def parse_bristol_circuit(filepath):
 
 # Generate a global delta for Free XOR
 def generate_delta(seed: bytes, counter: int = 0) -> bytes:
-    assert len(seed) >= 16, "[Client] Seed (k_rand) must be at least 128 bits"
+    assert len(seed) >= 16, "[Client] ❌ Seed (k_rand) must be at least 128 bits"
 
     # Use HMAC to derive 128-bit pseudorandom value from k_rand and counter
     h = hmac.new(seed, f'delta-{counter}'.encode(), hashlib.sha256).digest()
@@ -312,7 +314,7 @@ def garble_circuit(circuit, wire_labels, delta, g_P):
             counter=counter+2
 
         else:
-            raise NotImplementedError("[Client] ",f"Gate {gtype} not supported.")
+            raise NotImplementedError("[Client] ❌ ",f"Gate {gtype} not supported.")
     return garbled_tables
 
 ######################################################################################################
@@ -356,6 +358,7 @@ def send_sample_garbled_output(evaluator_package):
     # Connect to middlebox and send length + data
     s = socket.socket()
     s.connect(('middlebox', 5001))
+    print("[Client] 🚀 Connected to middlebox for sample evaluation")
     s.sendall(length + serialized)
     s.close()
 
@@ -414,6 +417,7 @@ def send_garbled_output(evaluator_package, wire_labels, offset):
     length = len(serialized).to_bytes(4, 'big')
 
     s = socket.socket()
+    print("[Client] 🚀 Connected to middlebox for OT+Garbling")
     s.connect(('middlebox', 5001))
     s.sendall(length + serialized)
 
@@ -421,16 +425,16 @@ def send_garbled_output(evaluator_package, wire_labels, offset):
         # Receive number of blocks (4 bytes)
         num_blocks_bytes = s.recv(4)
         if len(num_blocks_bytes) < 4:
-            raise RuntimeError("[Client] Failed to receive number of plaintext blocks")
+            raise RuntimeError("[Client] ❌ Failed to receive number of plaintext blocks")
         num_blocks = int.from_bytes(num_blocks_bytes, 'big')
 
         handle_oblivious_transfer(s,num_blocks,wire_labels,offset)
         
     except Exception as e:
-        print(f"[!] Error in send_garbled_output: {e}")
+        print(f"[Client] ❌ [!] Error in send_garbled_output: {e}")
     finally:
         s.close()
-        print("[Client] garbled tables and labels sent to middlebox")
+        print("[Client] ✅ garbled tables and labels sent to middlebox")
 
 # Mathematical functions ############################################################################
 
@@ -464,17 +468,17 @@ def main():
     start=time.time()
     k_ssl, k, k_rand = perform_key_exchange()
     end=time.time()
-    print("Time taken for key exchange = ",end-start)
+    print("[Client] 🕒 Time taken for key exchange = ",end-start)
 
     start=time.time()
     option, min_length = tokenisation_selection()
     end=time.time()
-    print("Time taken for tokenisation details and salt exchange = ",end-start)
+    print("[Client] 🕒 Time taken for tokenisation details and salt exchange = ",end-start)
 #####################################################################################################
 
     circuit_path = "aes_128.bristol" 
     circuit = parse_bristol_circuit(circuit_path)
-    print("[Client] AES circuit ready..!")
+    print("[Client] ✅ AES circuit ready..!")
 #####################################################################################################
 
     # Sample check, for is the circuit working correctly #############################################
@@ -488,7 +492,7 @@ def main():
     sample_out_bits = evaluate_circuit(circuit, sample_input_bits)
     sample_output_hex = bits_to_hex(sample_out_bits)
 
-    print("[Client] Circuit Output:  ", sample_output_hex)
+    print("[Client] 🟡 Circuit Output for sample:  ", sample_output_hex)
 
     sample_delta = generate_delta(k_rand)
     sample_X= generate_delta(k_rand) # will be used for INV gates
@@ -497,7 +501,7 @@ def main():
     start=time.time()
     sample_garbled_tables = garble_circuit(circuit, sample_wire_labels, sample_delta,sample_g_P)
     end=time.time()
-    print("Time taken for garbling =",end-start)
+    print("[Client] 🕒 Time taken for garbling =",end-start)
     sample_evaluator_package = prepare_sample_evaluator_package(circuit, sample_wire_labels, sample_pt_bits, sample_garbled_tables,sample_key_bits,sample_g_P)
     send_sample_garbled_output(sample_evaluator_package)
 
@@ -519,20 +523,19 @@ def main():
     while True:
         m = socket.socket()
         m.connect(('middlebox', 5001))
-        msg = input("[Client] Enter message to send: ")
+        msg = input("[Client] 🔴 Enter message to send: ")
         if not msg:
             break
         tokens = []
         salts=[]
         if option == 1:
-            print("[Client] Window-based tokenisation selected with window-size=",min_length)
+            print("[Client]1️⃣ Window-based tokenisation selected with window-size=",min_length)
             tokens,salts = window_tokenisation(msg,min_length)
-            print(salts)
         elif option == 2:
-            print("[Client] Delimiter-based tokenisation selected")
+            print("[Client] 2️⃣ Delimiter-based tokenisation selected")
             tokens,salts = delimiter_tokenisation(msg,min_length)
 
-        print("[Client] Tokens:",tokens)
+        print("[Client] 🟡 Tokens:",tokens)
         pre_encrypted_tokens = []
         encrypted_tokens = []
         cipher = Cipher(algorithms.AES(k), modes.ECB(), backend=default_backend())
@@ -563,11 +566,12 @@ def main():
         payload= len(enc_msg).to_bytes(4, 'big')+enc_msg + option.to_bytes(1, 'big')+ (min_length).to_bytes(4, 'big')+len(token_data).to_bytes(4, 'big')+token_data
 
         print('')
-        print("[Client] PAYLOAD:",payload)
+        print("[Client] 🟡 PAYLOAD:",payload)
+        print("[Client] 🚀 Connected to middlebox for sending payload")
         m.sendall(payload)
         #Recieve from middlebox
         response = m.recv(1024) # record the response
-        print("[Client] Received from middlebox:", response.decode())
+        print("[Client] ✅ Received from middlebox:", response.decode())
         m.close()
 
 ######################################################################################################

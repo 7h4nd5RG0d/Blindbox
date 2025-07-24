@@ -53,7 +53,7 @@ def handle_key_exchange(server_socket):
     global k_ssl, k, k_rand, salt_int
 
     conn, addr = server_socket.accept()
-    print("[Server] Key exchange connection from", addr)
+    print("[Server] 🚀 Key exchange connection from", addr)
 
     pk_len_bytes = conn.recv(4)
     pk_len = int.from_bytes(pk_len_bytes, 'big')
@@ -65,9 +65,9 @@ def handle_key_exchange(server_socket):
     salt_bytes =conn.recv(1024)
     salt_int = int.from_bytes(salt_bytes, 'big')
 
-    print("[Server] salt recieved:",salt_int)
+    print("[Server] ✅ salt recieved:",salt_int)
     shared_secret = ss
-    print("[Server] Shared secret with client:", shared_secret.hex())
+    print("[Server] 🟡 Shared secret with client:", shared_secret.hex())
 
     key = hashlib.sha512(shared_secret).digest() 
     k_ssl=key[:32]
@@ -120,7 +120,7 @@ def parse_bristol_circuit(filepath):
     if len(inputs_info) == 3:
         input1, input2, num_outputs = inputs_info # 2nd line stores the number of inputs of server, middlebox and number of outputs in bits
     else:
-        raise ValueError("[Server] Unexpected header in Bristol file: expected 3 values on line 2.")
+        raise ValueError("[Server] ❌ Unexpected header in Bristol file: expected 3 values on line 2.")
 
     gates = [] # Stores the gates
     input_counts = defaultdict(int)
@@ -152,7 +152,7 @@ def parse_bristol_circuit(filepath):
 
 # Generate a global delta for Free XOR
 def generate_delta(seed: bytes, counter: int = 0) -> bytes:
-    assert len(seed) >= 16, "[Server] Seed (k_rand) must be at least 128 bits"
+    assert len(seed) >= 16, "[Server] ❌ Seed (k_rand) must be at least 128 bits"
 
     # Use HMAC to derive 128-bit pseudorandom value from k_rand and counter
     h = hmac.new(seed, f'delta-{counter}'.encode(), hashlib.sha256).digest()
@@ -256,7 +256,7 @@ def garble_circuit(circuit, wire_labels, delta, g_P):
             counter=counter+2
 
         else:
-            raise NotImplementedError("[Client] ",f"Gate {gtype} not supported.")
+            raise NotImplementedError("[Client] ❌",f"Gate {gtype} not supported.")
     return garbled_tables
 
 
@@ -294,7 +294,7 @@ def send_garbled_output(s,evaluator_package, wire_labels, offset):
     length = len(serialized).to_bytes(4, 'big')
 
     conn, addr = s.accept()
-    print("[Server] Garbling connection from", addr)
+    print("[Server] 🚀 Garbling connection from", addr)
    
     conn.sendall(length + serialized)
 
@@ -302,15 +302,15 @@ def send_garbled_output(s,evaluator_package, wire_labels, offset):
         # Receive number of blocks (4 bytes)
         num_blocks_bytes = conn.recv(4)
         if len(num_blocks_bytes) < 4:
-            raise RuntimeError("[Server] Failed to receive number of plaintext blocks")
+            raise RuntimeError("[Server] ❌ Failed to receive number of plaintext blocks")
         num_blocks = int.from_bytes(num_blocks_bytes, 'big')
 
         handle_oblivious_transfer(conn,num_blocks,wire_labels,offset)
     except Exception as e:
-        print(f"[!] Error in send_garbled_output: {e}")
+        print(f"[Server] ❌ [!] Error in send_garbled_output: {e}")
     finally:
         conn.close()
-        print("[Server] garbled tables and labels sent to middlebox")
+        print("[Server] ✅ garbled tables and labels sent to middlebox")
 
 # Evaluating circuit /// Trivial just for CHECKING
 def evaluate_circuit(circuit, input_bits):
@@ -333,18 +333,18 @@ def evaluate_circuit(circuit, input_bits):
     return wire_values[-circuit["num_outputs"]:]
 #####################################################################################################
 def handle_middlebox_messages(server_socket,circuit):
-    print("[Server] Ready to receive from middlebox...")
+    print("[Server] 🚀 Ready to receive from middlebox...")
     while True:
         try:
             conn, addr = server_socket.accept()
-            print("[Server] Message from", addr)
+            print("[Server] 🚀 Message from", addr)
             check_validity = int.from_bytes(receive_full(conn, 1), byteorder='big')
             if check_validity==2:
-                print("[Server] User is blacklisted, will take strict action....")
+                print("[Server] ⚫ User is blacklisted, will take strict action....")
                 conn.close()
                 continue
             if check_validity==0:
-                print("[Server] Keeping eye on the user, might be a malicious actor..")
+                print("[Server] 🔴 Keeping eye on the user, might be a malicious actor..")
 
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
             dec_data=decrypt_message(k_ssl,encrypted_msg)
@@ -381,7 +381,7 @@ def handle_middlebox_messages(server_socket,circuit):
                 ct_bytes = ct_int.to_bytes(8, byteorder='big')
                 server_enc_tokens.append(ct_bytes)
                 idx=idx+1
-            print("[Server] Received:", dec_data.decode())
+            print("[Server] ✅ Received:", dec_data.decode())
             if encrypted_tokens==server_enc_tokens:
                 conn.send(dec_data) 
                 conn.close()
@@ -389,7 +389,7 @@ def handle_middlebox_messages(server_socket,circuit):
                 warning="Hacking attempt detected at [Server]"
                 conn.send(warning.encode())
         except Exception as e:
-            print("[Server] Error:", str(e))
+            print("[Server] ❌ Error:", str(e))
 
 #####################################################################################################
 # TOKENISATION
@@ -398,7 +398,6 @@ def window_tokenisation(plaintext, window_size):
     tokens = []
     salts=[]
     global counts
-    print("[DEBUG] counts dict id:", id(counts))
     message_bytes = plaintext.encode('utf-8')
     length = len(message_bytes)
     for i in range(length-window_size+1):
@@ -476,7 +475,7 @@ def receive_full(conn, n):
     while len(data) < n:
         chunk = conn.recv(n - len(data))
         if not chunk:
-            raise ConnectionError("Socket closed prematurely")
+            raise ConnectionError("[Server] ❌ Socket closed prematurely")
         data += chunk
     return data
 
@@ -516,7 +515,7 @@ def main():
     s = socket.socket()
     s.bind(('0.0.0.0', 5002))
     s.listen(5)
-    print("[Server] Server up...")
+    print("[Server] 🟢 Server up...")
 
 #####################################################################################################
     handle_key_exchange(s)
@@ -524,7 +523,7 @@ def main():
 #####################################################################################################
     circuit_path = "aes_128.bristol" 
     circuit = parse_bristol_circuit(circuit_path)
-    print("[Server] AES circuit ready..!")
+    print("[Server] ✅ AES circuit ready..!")
 
 #####################################################################################################
 

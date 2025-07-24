@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import secrets
-import copy
+import time
 
 #####################################################################################################
 # GLOBAL PARAMS:
@@ -202,15 +202,15 @@ def AVL_deletion(root,token):
 def handle_tokenisation(middlebox_socket):
     global salt_0
     conn, addr = middlebox_socket.accept()
-    print("[Middlebox] Tokenisation connection from", addr)
+    print("[Middlebox] 🚀 Tokenisation connection from", addr)
     s=random.randint(1,2)
     msg = f"{s},{window_length}"
     conn.send(msg.encode())
     
-    print("[Middlebox] Tokenisation method:", s)
+    print("[Middlebox] 🟡 Tokenisation method:", s)
     salt_0_bytes=conn.recv(1024)
     salt_0 = int.from_bytes(salt_0_bytes, 'big')
-    print("[Middlebox] Initial salt decided is",salt_0)
+    print("[Middlebox] 🟡 Initial salt decided is",salt_0)
     conn.close()
     return s
 
@@ -273,7 +273,7 @@ def delimiter_tokenisation(plaintext,window_size):
 # Handle the sample evaluation from client
 def sample_handle_evaluation(middlebox_socket):
     conn, addr = middlebox_socket.accept()
-    print("[Middlebox] Sample Evaluation connection from", addr)
+    print("[Middlebox] 🚀 Sample Evaluation connection from", addr)
     with conn:
         length_bytes = conn.recv(4)
         length = int.from_bytes(length_bytes, 'big')
@@ -281,9 +281,9 @@ def sample_handle_evaluation(middlebox_socket):
         while len(data) < length:
             chunk = conn.recv(length - len(data))
             if not chunk:
-                raise ConnectionError("[Middlebox] Connection closed unexpectedly")
+                raise ConnectionError("[Middlebox] ❌ Connection closed unexpectedly")
             data += chunk
-        print("[Middlebox] Received evaluator package.")
+        print("[Middlebox] ✅ Received evaluator package.")
         conn.close()
     return pickle.loads(data)
 
@@ -337,7 +337,7 @@ def prepare(ruleset,tokenisation_type,window_length):
             for i in range(0,len(padded),16):
                 prepared_rules.append((padded[i:i+16]))
 
-    print("[Middlebox] Ruleset prepared for OT")
+    print("[Middlebox] ✅ Ruleset prepared for OT")
     return prepared_rules
 
 #####################################################################################################
@@ -392,7 +392,7 @@ def evaluate_gate(gate, wire_values, g_P, counter):
         wire_values[out_wire] = label
 
     else:
-        raise NotImplementedError(f"Unsupported gate type: {gate['type']}")
+        raise NotImplementedError(f"[Middlebox] ❌ Unsupported gate type: {gate['type']}")
 
 #####################################################################################################
 # Decoding outputs labels using output map:
@@ -488,24 +488,24 @@ def handle_ot(conn,plaintext_rules):
 # Recieve the labels corresponding to the plaintext ruleset for yao garbled circuits 
 def receive_labels_client(plaintext_rules, s):
     conn, addr = s.accept()
-    print(f"[Middlebox] Evaluation Connected to {addr}")
+    print(f"[Middlebox] 🚀 Evaluation Connected to {addr}")
 
     try:
         # Step 1: Receive evaluator package
         length_bytes = conn.recv(4)
         if len(length_bytes) < 4:
-            raise RuntimeError("[Middlebox] Did not receive full length prefix")
+            raise RuntimeError("[Middlebox] ❌ Did not receive full length prefix")
 
         length = int.from_bytes(length_bytes, 'big')        
         received = b''
         while len(received) < length:
             chunk = conn.recv(min(4096, length - len(received)))
             if not chunk:
-                raise RuntimeError("[Middlebox] Connection closed while receiving circuit")
+                raise RuntimeError("[Middlebox] ❌ Connection closed while receiving circuit")
             received += chunk
 
         evaluator_package = pickle.loads(received)
-        print("[Middlebox] Received evaluator package from client.")
+        print("[Middlebox] ✅ Received evaluator package from client.")
 
         num_blocks = len(plaintext_rules)
         conn.sendall(num_blocks.to_bytes(4, 'big'))
@@ -514,7 +514,7 @@ def receive_labels_client(plaintext_rules, s):
         return evaluator_package, input_labels
 
     except Exception as e:
-        print("[Middlebox] ",f"[!] Error: {e}")
+        print("[Middlebox] ❌",f"[!] Error: {e}")
         return None, []
     finally:
         conn.close()
@@ -525,23 +525,23 @@ def receive_labels_server(plaintext_rules):
         # Step 1: Connect to the server
         with socket.socket() as conn:
             conn.connect(('server', 5002))
-            print("[Middlebox] Connected to Server for Garbling and Eval.")
+            print("[Middlebox] 🚀 Connected to Server for Garbling and Eval.")
 
             # Step 2: Receive evaluator package
             length_bytes = conn.recv(4)
             if len(length_bytes) < 4:
-                raise RuntimeError("[Middlebox] Did not receive full length prefix")
+                raise RuntimeError("[Middlebox] ❌ Did not receive full length prefix")
 
             length = int.from_bytes(length_bytes, 'big')        
             received = b''
             while len(received) < length:
                 chunk = conn.recv(min(4096, length - len(received)))
                 if not chunk:
-                    raise RuntimeError("[Middlebox] Connection closed while receiving circuit")
+                    raise RuntimeError("[Middlebox] ❌ Connection closed while receiving circuit")
                 received += chunk
 
             evaluator_package = pickle.loads(received)
-            print("[Middlebox] Received evaluator package from server.")
+            print("[Middlebox] ✅ Received evaluator package from server.")
 
             # Step 3: Send number of plaintext blocks
             num_blocks = len(plaintext_rules)
@@ -551,7 +551,7 @@ def receive_labels_server(plaintext_rules):
             return evaluator_package, input_labels
 
     except Exception as e:
-        print("[Middlebox] ", f"[!] Error: {e}")
+        print("[Middlebox] ❌", f"[!] Error: {e}")
         return None, []
 
 #####################################################################################################
@@ -575,7 +575,7 @@ def receive_full(conn, n):
     while len(data) < n:
         chunk = conn.recv(n - len(data))
         if not chunk:
-            raise ConnectionError("[Middlebox] Socket closed prematurely")
+            raise ConnectionError("[Middlebox] ❌ Socket closed prematurely")
         data += chunk
     return data
 
@@ -638,7 +638,7 @@ def main():
     mb = socket.socket()
     mb.bind(('0.0.0.0', 5001))
     mb.listen(15)
-    print("[Middlebox] Middlebox up...")
+    print("[Middlebox] 🟢 Middlebox up...")
 
 #####################################################################################################   
     tokenisation_type=handle_tokenisation(mb) 
@@ -649,36 +649,40 @@ def main():
     sample_wire_values = sample_evaluate_circuit(sample_package)
     sample_output_bits = decode_outputs(sample_wire_values, sample_package['output_map'])
     sample_output_bytes = bits_to_bytes(sample_output_bits)
-    print("[Middlebox] Sample Output (hex):", sample_output_bytes.hex())
+    print("[Middlebox] 🟡 Sample Output (hex):", sample_output_bytes.hex())
 
 #####################################################################################################
     prepared_ruleset=prepare(ruleset,tokenisation_type,window_length)
 
 #####################################################################################################
-    print("[Middlebox] Evaluating the circuit ...")
+    print("[Middlebox] 🟡 Evaluating the circuit ...")
+    start=time.time()
     package_client,labels_client=receive_labels_client(prepared_ruleset,mb)
-    print("[Middlebox] Recieved labels from client")
+    end=time.time()
+    print("[Middlebox] ✅ Recieved labels from client in ",end-start)
+    start=time.time()
     package_server,labels_server=receive_labels_server(prepared_ruleset)
-    print("[Middlebox] Recieved labels from server")
+    end=time.time()
+    print("[Middlebox] ✅ Recieved labels from server in ",end-start)
     if  (labels_server!=labels_client) or (package_client!=package_server): # Checks if garbled circuit/tables and labels are same.....
         warning="Hacking attempt detected at [Middlebox]"
-        print("[Middlebox] Hacking attempt detected here...")
+        print("[Middlebox] 🔴 Hacking attempt detected here...")
         conn, addr = mb.accept()
         conn.send(warning.encode())
         conn.close()
         mb.close()
         return
-    print("[Middlebox] Garbled tables/circuit of client and sevrer match, moving forward...")
+    print("[Middlebox] ✅ Garbled tables/circuit of client and sevrer match, moving forward...")
     wire_values = evaluate_circuit(package_client,labels_client)
     encrypted_ruleset=[]
     for i in range(0,len(wire_values)):
         output_bits = decode_outputs(wire_values[i], package_client['output_map'])
         encrypted_ruleset.append(bits_to_bytes(output_bits))
-    print("[Middlebox] Encryption of ruleset done..!")
+    print("[Middlebox] ✅ Encryption of ruleset done..!")
 #####################################################################################################
 # AVL Root for faster searching and updation
     root=AVL_creation(None,encrypted_ruleset)
-    print("[Middlebox] AVL Tree created")
+    print("[Middlebox] ✅ AVL Tree created")
 #####################################################################################################
     while True:
         try:
@@ -686,10 +690,10 @@ def main():
             # Connection with client
             conn, addr = mb.accept()
             found=False
-            print(f"[Middlebox] Connection from {addr}")
+            print(f"[Middlebox] 🚀 Connection from {addr}")
             encrypted_msg,token_stream,tokenisation_type,token_length= receive_payload(conn)
-            print("[Middlebox] Encrypted message:", encrypted_msg.hex())
-            print("[Middlebox] Encrypted tokens:", token_stream.hex())
+            print("[Middlebox] 🟡 Encrypted message:", encrypted_msg.hex())
+            print("[Middlebox] 🟡 Encrypted tokens:", token_stream.hex())
 
             parsed_tokens=parse_token_data(token_stream) # parse the token data
             sus_count=0
@@ -703,11 +707,11 @@ def main():
 
             # Forward as-is to the server
             if token_length==window_length:
-                if found:
-                    print("[Middlebox] packet has suspicious content, deciding how to proceed..")
-                    print("[Middlebox] malicious percentage is",sus_percentage)
-                    if(sus_percentage>=0.5):
-                        print("[Middlebox] very large probability of malicious content, warning server to take action against client")
+                if found and sus_percentage>=0.1:
+                    print("[Middlebox] 🔴 packet has suspicious content, deciding how to proceed..")
+                    print("[Middlebox] 🟡 malicious percentage is",sus_percentage)
+                    if(sus_percentage>=0.3):
+                        print("[Middlebox] 🔴 very large probability of malicious content, warning server to take action against client")
                         payload=(2).to_bytes(1,'big')
                         server_response = forward_to_server(payload)
                         warning="Hacking attempt detected at [Middlebox]"
@@ -733,7 +737,7 @@ def main():
                 break
 
         except Exception as e:
-            print("[Middlebox] Error:", str(e))
+            print("[Middlebox] ❌ Error:", str(e))
         finally:
             conn.close()
 
