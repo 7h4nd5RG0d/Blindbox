@@ -502,6 +502,14 @@ def main():
     option, min_length,ruleset_hash = tokenisation_selection()
     end=time.time()
     print("[Client] 🕒 Time taken for tokenisation details and salt exchange = ",end-start)
+
+    try:
+        hash_obj = SHA256.new(ruleset_hash)
+        pkcs1_15.new(pubkey).verify(hash_obj, signature)
+        print("[Client] ✅ Signature verified successfully.")
+    except (ValueError, TypeError):
+        print("[Client] ❌ Signature verification failed.")
+        exit(1)
 #####################################################################################################
 
     circuit_path = "aes_128.bristol" 

@@ -9,8 +9,9 @@ privkey = key
 pubkey = key.publickey()
 ruleset = ['hack','malware']
 ruleset_bytes = pickle.dumps(ruleset)
-hash = SHA256.new(ruleset_bytes)
-signature = pkcs1_15.new(privkey).sign(hash)
+ruleset_digest = SHA256.new(ruleset_bytes).digest()
+digest_hash = SHA256.new(ruleset_digest)
+signature = pkcs1_15.new(privkey).sign(digest_hash)
 
 
 def send_public_key(generator_socket):
