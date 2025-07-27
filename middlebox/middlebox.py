@@ -1,4 +1,5 @@
 # DEPENDENCIES:
+from Crypto.Hash import SHA256
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
@@ -18,9 +19,9 @@ import time
 # GLOBAL PARAMS:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Ruleset
-ruleset = ['hack','malware']
-min_length = min(len(word) for word in ruleset)
-window_length=min(min_length,8) # Window length for tokenisation
+ruleset = []
+min_length = 0
+window_length=0 # Window length for tokenisation
 RS=2**64
 salt_0=0 # Initial salt
 WIRE_LABEL_SIZE=16
@@ -197,9 +198,22 @@ def AVL_deletion(root,token):
     root.height=1+max(get_height(root.left),get_height(root.right))
     return rebalance(root),ciphertext,deleted_ctr
 
+def get_ruleset(middlebox_socket):
+    conn, addr = middlebox_socket.accept()
+    print("[Middlebox] 🚀 Ruleset connection from", addr)
+    data = b''
+    while True:
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        data += chunk
+
+    ruleset = pickle.loads(data)
+    conn.close()
+    return ruleset
 #####################################################################################################
 # Select tokenisation scheme
-def handle_tokenisation(middlebox_socket):
+def handle_tokenisation(middlebox_socket,ruleset_hash):
     global salt_0
     conn, addr = middlebox_socket.accept()
     print("[Middlebox] 🚀 Tokenisation connection from", addr)
@@ -211,6 +225,7 @@ def handle_tokenisation(middlebox_socket):
     salt_0_bytes=conn.recv(1024)
     salt_0 = int.from_bytes(salt_0_bytes, 'big')
     print("[Middlebox] 🟡 Initial salt decided is",salt_0)
+    conn.send(ruleset_hash)
     conn.close()
     return s
 
@@ -635,13 +650,20 @@ def bits_to_hex(bits):
 #####################################################################################################
 def main():
     # Setup middlebox
+    global ruleset,min_length,window_length
+
     mb = socket.socket()
     mb.bind(('0.0.0.0', 5001))
     mb.listen(15)
     print("[Middlebox] 🟢 Middlebox up...")
 
 #####################################################################################################   
-    tokenisation_type=handle_tokenisation(mb) 
+    ruleset=get_ruleset(mb)
+    ruleset_bytes=pickle.dumps(ruleset)
+    ruleset_hash = SHA256.new(ruleset_bytes).digest()
+    min_length = min(len(word) for word in ruleset)
+    window_length=min(min_length,8) # Window length for tokenisation
+    tokenisation_type=handle_tokenisation(mb,ruleset_hash) 
 
 #####################################################################################################
 # Sample part:

@@ -7,6 +7,9 @@ from pqcrypto.kem.mceliece8192128 import generate_keypair, encrypt, decrypt
 from collections import defaultdict 
 from tinyec.ec import Point
 from tinyec import registry,ec
+from Crypto.Signature import pkcs1_15
+from Crypto.PublicKey import RSA
+from Crypto.Hash import SHA256
 import hmac
 import socket
 import pickle
@@ -29,6 +32,28 @@ counts={} # counter
 curve = registry.get_curve('secp256r1')  # prime-order group
 G = curve.g  # Generator point
 p = curve.field.p  # Prime field order
+
+def recieve_public_key():
+    s = socket.socket()
+    print("[Client] 🚀 Connecting to rule-generator to get public key")
+    s.connect(('rule_generator', 5003))
+
+    # Receive key length
+    key_len_bytes = s.recv(4)
+    key_len = int.from_bytes(key_len_bytes, 'big')
+
+    # Receive key
+    pubkey_bytes = b''
+    while len(pubkey_bytes) < key_len:
+        pubkey_bytes += s.recv(key_len - len(pubkey_bytes))
+
+    # Receive signature (assume 256 bytes for RSA-2048)
+    signature = b''
+    while len(signature) < 256:
+        signature += s.recv(256 - len(signature))
+    s.close()
+    pubkey = RSA.import_key(pubkey_bytes)
+    return pubkey, signature
 
 #####################################################################################################
 #Key Exchange and exchange salt
@@ -62,10 +87,11 @@ def tokenisation_selection():
     option = s.recv(1024).decode()
     print("[Client] 🟡 Salt:",salt_int)
     s.send(salt)
+    ruleset_hash_digest = s.recv(1024)
     s.close()
     print("[Client] ✅ Salt and tokenisation details exchanged with middlebox")
     option_str, min_len_str = option.split(',')
-    return int(option_str), int(min_len_str) # Window based with window-size
+    return int(option_str), int(min_len_str),ruleset_hash_digest
 
 # Window Tokenisation
 def window_tokenisation(plaintext, window_size):
@@ -466,13 +492,14 @@ def bits_to_hex(bits):
 def main():
 
 #####################################################################################################
+    pubkey,signature=recieve_public_key()
     start=time.time()
     k_ssl, k, k_rand = perform_key_exchange()
     end=time.time()
     print("[Client] 🕒 Time taken for key exchange = ",end-start)
 
     start=time.time()
-    option, min_length = tokenisation_selection()
+    option, min_length,ruleset_hash = tokenisation_selection()
     end=time.time()
     print("[Client] 🕒 Time taken for tokenisation details and salt exchange = ",end-start)
 #####################################################################################################

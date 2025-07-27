@@ -8,7 +8,14 @@ services:
       - "5002:5002"
     networks:
       - dhnet
-
+    
+  rule_generator:
+    build: ./rule_generator
+    container_name: rule_generator
+    ports:
+      - "5003:5003"
+    networks:
+      - dhnet
   middlebox:
     build: ./middlebox
     container_name: middlebox
@@ -16,6 +23,7 @@ services:
       - "5001:5001"
     depends_on:
       - server
+      - rule_generator
     networks:
       - dhnet
 
