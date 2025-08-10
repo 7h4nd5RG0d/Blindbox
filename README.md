@@ -27,3 +27,7 @@ docker-compose logs -f
 docker-compose down
 ```
 before starting new session
+
+# Code intuition and explanation
+
+[📄 Read the full documentation (PDF)](Blindbox.pdf)
