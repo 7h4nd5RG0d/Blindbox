@@ -28,6 +28,12 @@ docker-compose down
 ```
 before starting new session
 
-# Code intuition and explanation
+# Code intuition and explanation:
 
 [📄 Read the full documentation (PDF)](Blindbox.pdf)
+
+# Referances:
+https://o1-labs.github.io/proof-systems/fundamentals/zkbook_2pc/overview.html  
+https://encrypt.a41.io/mpc/yaos-garbled-circuits#half-gates  
+https://securecomputation.org/  
+https://giapppp.github.io/posts/ygc/  
