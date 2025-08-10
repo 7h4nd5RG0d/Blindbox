@@ -32,6 +32,9 @@ before starting new session
 
 [📄 Read the full documentation (PDF)](Blindbox.pdf)
 
+# Code:
+![Client takes 60 seconds for OT](image.png)
+![Server takes 58 seconds for OT](image-1.png)
 # Referances:
 https://o1-labs.github.io/proof-systems/fundamentals/zkbook_2pc/overview.html  
 https://encrypt.a41.io/mpc/yaos-garbled-circuits#half-gates  
